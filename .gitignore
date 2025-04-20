@@ -12,3 +12,7 @@ build/
 
 # Testing
 testing/
+*.fid
+*.ft
+*.ft2
+*.ft3
