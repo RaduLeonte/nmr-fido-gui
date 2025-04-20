@@ -1,0 +1,37 @@
+#InnerFrame {
+    border: 2px solid black;
+    border-radius: 5px;
+}
+
+#InnerFrame[selected="true"] {
+    border: 2px solid white;
+}
+
+
+#NodeBody {
+    background-color: #303030;
+}
+
+QSpinBox {
+    background-color: #1d1d1d;
+    color: white;
+}
+
+QDoubleSpinBox {
+    background-color: #1d1d1d;
+    color: white;
+}
+
+QLineEdit {
+    background-color: #1d1d1d;
+    color: white;
+}
+
+#CustomCheckBox {
+    background-color: #656565;
+    color: white;
+}
+
+#CustomCheckBox[checked="true"] {
+    background-color: #4772b3;
+}
