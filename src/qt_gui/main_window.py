@@ -2,51 +2,78 @@ import os
 import numpy as np
 from functools import partial
 from copy import deepcopy
+import nmrglue as ng
+from inspect import Signature
+import re
+from collections import defaultdict
 
 from PySide6.QtCore import (
     Qt,
     QThreadPool, QRunnable, Slot,
-    QSize, QRectF,
+    QSize,
 )
 from PySide6.QtWidgets import (
     QApplication, QMainWindow,
     QGridLayout, QGroupBox, QHBoxLayout, QVBoxLayout,
-    QWidget, QLabel,QLineEdit,QSlider, QPushButton, QSizePolicy, QFileDialog,
+    QWidget, QLabel, QLineEdit, QSlider, QPushButton, QSizePolicy,
+    QFileDialog, QListWidget, QSplitter, QSpacerItem, QCheckBox,
+    QScrollArea, QWidgetAction,
 )
 from PySide6.QtGui import (
-    QImage, QPixmap, QColor,
-    QPainter, QPen,
+    QAction,
+    QResizeEvent, QDragEnterEvent, QDragLeaveEvent, QDropEvent,
+    QPixmap, QColor,
     QTransform,
     QDoubleValidator,
 )
 import pyqtgraph as pg
 
+from src.session import Session
 from src.spectrum import Spectrum
+from src.processing_modules import ProcessingModules
 
 
 def start_app(args: list):
-    spectrum: Spectrum = Spectrum()
-    
+    """Start the application.
+
+    Args:
+        args (list): List of arguments passed through command line.
+    """
+    # Main application
     app: QApplication = QApplication(args)
-    app.setStyle("fusion")
-
-    window: MainWindow = MainWindow(spectrum, app)
+    # Main window
+    window: MainWindow = MainWindow(app)
     window.show()
-
+    # Run app
     app.exec()
 
 
 class MainWindow(QMainWindow):
-    def __init__(self, spectrum: Spectrum, app: QApplication) -> None:
+    """Main window class
+    """
+    def __init__(self, app: QApplication) -> None:
+        """Constructor.
+
+        Args:
+            app (QApplication): QApplication context.
+        """
+        # Parent constructor
         super().__init__()
         
+        # Set app
         self.app = app
+        
+        # Initialize classes
+        self.session = Session()
+        self.processing_modules = ProcessingModules()
         
         """
         Window config
         """
+        #region Window config
         self.setWindowTitle("NMR Fido")
         #self.setWindowIcon(QIcon("icon.png"))
+        self.setAcceptDrops(True)
         
         # Minimum size
         min_size = (820, 400)
@@ -61,41 +88,184 @@ class MainWindow(QMainWindow):
             app_height = int(screen_size.height()*(2/3))
             app_size = QSize(int(app_height*(min_size[0]/min_size[1])), app_height)
         self.resize(app_size)
+        #endregion
+        
         
         """Thread pool"""
         self.threadpool = QThreadPool()
+        
+        
+        """
+        Menu
+        """
+        #region Menu
+        menu = self.menuBar()
+        
+        """File"""
+        #region Menu: File
+        file_menu = menu.addMenu("File")
+        
+        """File -> New project"""
+        new_project_action = QAction("New project", self)
+        new_project_action.setEnabled(False)
+        file_menu.addAction(new_project_action)
+        
+        """File -> Open project"""
+        open_project_action = QAction("Open project", self)
+        open_project_action.setEnabled(False)
+        file_menu.addAction(open_project_action)
+        
+        """File -> Open recent project >"""
+        recent_projects = []
+        recent_projects_submenu = file_menu.addMenu("Open recent project")
+        
+        """File -> Open recent project -> [Recent projects]"""
+        if len(recent_projects) == 0:
+            no_recent_projects_action = QAction("< no recent projects >", self)
+            no_recent_projects_action.setEnabled(False)
+            recent_projects_submenu.addAction(no_recent_projects_action)
+        else:
+            for recent_project in recent_projects:
+                recent_projects_submenu.addAction(
+                    QAction(recent_project, self)
+                )
+
+        recent_projects_submenu.addSeparator()
+        
+        """File -> Open recent project -> Clear recent projects"""
+        clear_recent_projects = QAction("Clear recent projects", self)
+        clear_recent_projects.setEnabled(False)
+        recent_projects_submenu.addAction(clear_recent_projects)
+        
+        file_menu.addSeparator()
+
+        """File -> Import file"""
+        import_file_action = QAction("Import file", self)
+        import_file_action.triggered.connect(lambda: self.import_spectrum_button_callback())
+        file_menu.addAction(import_file_action)
+        
+        """File -> Import recent file >"""
+        recent_files = []
+        recent_files_submenu = file_menu.addMenu("Open recent file")
+        
+        """File -> Import recent file -> [Recent files]"""
+        if len(recent_files) == 0:
+            no_recent_files_action = QAction("< no recent files >", self)
+            no_recent_files_action.setEnabled(False)
+            recent_files_submenu.addAction(no_recent_files_action)
+        else:
+            for recent_file in recent_files:
+                recent_files_submenu.addAction(
+                    QAction(recent_file, self)
+                )
+
+        recent_files_submenu.addSeparator()
+        
+        """File -> Import recent file -> Clear recent files"""
+        clear_recent_files = QAction("Clear recent files", self)
+        clear_recent_files.setEnabled(False)
+        recent_files_submenu.addAction(clear_recent_files)
+        #endregion
+        
+        """Processing"""
+        #region Menu: Processing
+        processing_menu = menu.addMenu("Processing")
+        
+        display_spectrum_action = QAction("Display spectrum", self)
+        display_spectrum_action.triggered.connect(lambda: self.display_spectrum())
+        processing_menu.addAction(display_spectrum_action)
+        
+        """Processing -> Add processing module > """
+        add_proc_module_submenu = processing_menu.addMenu("Add processing module")
+        
+        
+        modules = self.processing_modules.modules
+        modules_hierarchy = {k:modules[k]["rel_path"] for k in modules.keys()}
+        sorted_modules = sorted(modules_hierarchy.items(), key=lambda x: len(x[1].split('.')), reverse=True)
+        menu_hierarchy = defaultdict(lambda: None)
+        print(modules_hierarchy)
+        for action_name, path in sorted_modules:
+            path_parts = path.split('.')
+            
+            current_menu = add_proc_module_submenu
+            for part in path_parts:
+                if menu_hierarchy[part] is None:
+                    menu_hierarchy[part] = current_menu.addMenu(part)
+                
+                current_menu = menu_hierarchy[part]
+
+            action = QAction(action_name, self)
+            action.triggered.connect(lambda _, fnc=action_name: self.add_processing_module(fnc))
+            current_menu.addAction(action)  
+        
+        add_default_processing = QAction("Add default processing (2D)", self)
+        add_default_processing.triggered.connect(lambda: self.default_processing())
+        add_proc_module_submenu.addAction(add_default_processing)
+        #endregion
+        
+        #endregion
 
 
         """
         Main container
         """
         layout = QHBoxLayout()
+        splitter = QSplitter(Qt.Horizontal)
         
         '''
-        Window Region: Phasing controls
+        Window Region: Spectra list
         '''
-        controls_group = QGroupBox("Phasing controls")
-        controls_group.setFixedWidth(400)
-        controls_group.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Expanding)
-        controls_group_layout = QVBoxLayout()
-        controls_group_layout.setAlignment(Qt.AlignmentFlag.AlignHCenter)
+        #region Spectra list
+        spectra_list_container = QGroupBox("Spectra List")
+        spectra_list_container.setMinimumWidth(200)
+        spectra_list_container_layout = QVBoxLayout()
+        spectra_list_container_layout.setAlignment(Qt.AlignmentFlag.AlignHCenter)
 
-        for i in [0, 1]:
-            controls_group_layout.addWidget(self.create_phasing_controls(i, spectrum))
+        self.spectra_list = QListWidget()
+        spectra_list_container_layout.addWidget(self.spectra_list)
+        self.spectra_list.currentItemChanged.connect(self.update_processing_controls)
         
-        controls_group_layout.addStretch()
-        controls_group.setLayout(controls_group_layout)
-        layout.addWidget(controls_group)
+        spectra_list_container_layout.addStretch()
+        spectra_list_container.setLayout(spectra_list_container_layout)
+        #endregion
         
         '''
-        Window Region: Spectrum
+        Window Region: Processing controls
         '''
-        spectrum_container = QGroupBox("Spectrum")
+        #region Processing controls
+        
+        controls_group_container = QGroupBox("Processing")
+        controls_group_container.setMinimumWidth(300)
+        controls_group_container_layout = QVBoxLayout()
+        
+        controls_group_scroll = QScrollArea()
+        
+        controls_group = QWidget()
+        self.controls_group_layout = QVBoxLayout()
+        self.controls_group_layout.setContentsMargins(0, 0, 0, 0)
+        self.controls_group_layout.setSpacing(0)
+        self.controls_group_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+
+        controls_group.setLayout(self.controls_group_layout)
+        
+        controls_group_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        controls_group_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        controls_group_scroll.setWidgetResizable(True)
+        controls_group_scroll.setWidget(controls_group)
+        
+        controls_group_container_layout.addWidget(controls_group_scroll)
+        controls_group_container.setLayout(controls_group_container_layout)
+        #endregion
+        
+        '''
+        Window Region: Spectrum display
+        '''
+        #region Spectrum display
+        spectrum_container = QGroupBox("Display")
+        spectrum_container.setMinimumWidth(500)
         spectrum_container.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         spectrum_container_layout = QVBoxLayout()
         
-        """Import buttons"""
-        spectrum_container_layout.addLayout(self.create_import_buttons(spectrum))
         
         """Plot grid"""
         plot_container = QWidget()
@@ -110,12 +280,13 @@ class MainWindow(QMainWindow):
         self.plot_ax = pg.PlotItem()
         self.plot_ax.showAxis("right")
         self.plot_ax.hideAxis("left")
-        self.plot_ax.getAxis("bottom").setLabel("Dim 0 [ppm]", color="#FFFFFF")
-        self.plot_ax.getAxis("bottom").setTextPen("w")
-        self.plot_ax.getAxis("right").setLabel("Dim 1\n[ppm]", color="#FFFFFF")
+        self.plot_ax.getAxis("bottom").setLabel("Dim 0 [ppm]")
+        self.plot_ax.getAxis("bottom").setTextPen("black")
+        self.plot_ax.getAxis("right").setLabel("Dim 1\n[ppm]")
         self.plot_ax.getAxis("right").label.setRotation(0)
         self.plot_ax.getAxis("right").label.setTextWidth(60)
-        self.plot_ax.getAxis("right").setTextPen("w")
+        self.plot_ax.getAxis("right").setTextPen("black")
+        self.plot_ax.getViewBox().setBackgroundColor("w")
         self.plot.setBackground(QColor(0, 0, 0, 0))
         plot_layout.addItem(self.plot_ax)
         self.plot_contours = []
@@ -123,7 +294,7 @@ class MainWindow(QMainWindow):
         plot_container_layout.addWidget(self.plot, 1, 1)
         
         """Horizontal trace"""
-        plot_container_layout.addWidget(self.create_horizontal_trace(), 2, 1)
+        #plot_container_layout.addWidget(self.create_horizontal_trace(), 2, 1)
         
         """Plot axes"""
         
@@ -133,16 +304,291 @@ class MainWindow(QMainWindow):
         
         # Add spectrum window region to main window
         spectrum_container.setLayout(spectrum_container_layout)
-        layout.addWidget(spectrum_container)
+        #endregion
         
         
         """
-        Master container
+        Splitter
         """
-        content = QWidget()
-        content.setLayout(layout)
-        self.setCentralWidget(content)
+        #region Splitter
+        splitter.addWidget(spectra_list_container)
+        splitter.addWidget(controls_group_container)
+        splitter.addWidget(spectrum_container)
+        splitter.setSizes(
+            [
+                0.2*app_size.width(),
+                0.2*app_size.width(),
+                0.6*app_size.width()
+            ]
+        )
+        layout.addWidget(splitter)
+        #endregion
+        
+        """
+        Overlay
+        """
+        #region Overlay
+        self.overlay = QLabel("", self)
+        self.overlay.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.overlay.setStyleSheet("""
+            background-color: rgba(0, 0, 0, 100);
+            font-weight: bold;
+        """)
+        self.overlay.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        self.overlay.hide()
+        #endregion
+        
+        # Set main layout to be layout of central widget
+        self.setCentralWidget(QWidget(layout=layout))
+    
+    
+    #region Main window resize event
+    def resizeEvent(self, e: QResizeEvent) -> None:
+        """Main window resize event handler
 
+        Args:
+            e (QEvent): _description_
+        """
+        # Resize the overlay widget so it always fills the window
+        self.overlay.resize(self.size())
+        
+        # Call base class resiz even
+        super().resizeEvent(e)
+    #endregion
+    
+    
+    #region File IO
+    def dragEnterEvent(self, e: QDragEnterEvent) -> None:
+        """Main window drag enter event handler.
+
+        Args:
+            e (QDragEnterEvent): Event passed when mouse enters the window.
+        """
+        
+        # Check if user is dragging files
+        if not e.mimeData().hasUrls():
+            # No files in payload, ignore
+            e.ignore()
+        else:
+            # Payload had files, check if there are files with accepted formats
+            valid_files = [
+                f.toLocalFile() for f in e.mimeData().urls()
+                if any(f.toLocalFile().lower().endswith(ext) for ext in [".fid", ".ft2"])
+            ]
+            # Check if any valid files were found
+            if len(valid_files) != 0:
+                # There are valid files, accept the payload and turn on green overlay
+                e.accept()
+                self.overlay.setStyleSheet("""
+                    background-color: rgba(0, 255, 0, 10);
+                    font-weight: bold;
+                """)
+                file_list_text = ''.join(f + '\n' for f in valid_files)
+                self.overlay.setText(
+                    f"Import files:\n{file_list_text}"
+                )
+            else:
+                # There were no valid files, ignore payload and turn on red overlay
+                e.ignore()
+                self.overlay.setStyleSheet("""
+                    background-color: rgba(255, 0, 0, 10);
+                    font-weight: bold;
+                """)
+                self.overlay.setText(
+                    f"Invalid file format."
+                )
+            # Make sure overlay is on top
+            self.overlay.raise_()
+            # Show overlay
+            self.overlay.show()
+    
+    
+    def dragLeaveEvent(self, e: QDragLeaveEvent) -> None:
+        """Main window drag leave event handler.
+
+        Args:
+            e (QDragLeaveEvent): Event passed when mouse leaves the window.
+        """
+        # Hide overlay on mouse leave
+        self.overlay.hide()
+    
+    
+    def dropEvent(self, e: QDropEvent) -> None:
+        """Main window drag leave event handler.
+
+        Args:
+            e (QDropEvent): Event passed when dropping files onto the window.
+        """
+        # Hide overlay
+        self.overlay.hide()
+        
+        # Fish out files with accepted file formats from the payload
+        valid_files = [
+            f.toLocalFile() for f in e.mimeData().urls()
+            if any(f.toLocalFile().lower().endswith(ext) for ext in [".fid", ".ft2"])
+        ]
+        
+        # Send valid files to be imported
+        self.import_spectra(valid_files)
+        
+        
+    def import_spectrum_button_callback(self) -> None:
+        """Open a dialog for file browsing files.
+        """
+        files = QFileDialog.getOpenFileName(
+            self,
+            'Open file',
+        )       
+        self.import_spectra(files)
+        
+        
+    def import_spectra(self, files: list[str]) -> None:
+        """Handles import of files from specified paths.
+
+        Args:
+            files (list[str]): List of file paths to import.
+        """
+        # Send list of files to Session class to import
+        self.session.import_spectra(files)
+        
+        # Update file list widget to be in sync with Session
+        self.update_spectra_list()
+        
+        # If there is no currently active spectrum, select the first spectrum
+        if self.session.get_active_spectrum_index() is None:
+            self.select_spectrum(0)
+        
+        for _ in range(len(files)):
+            self.controls_group_layout.addWidget(QWidget(layout=QVBoxLayout()))
+
+        # Temporary hardcoded processing
+        #self.add_processing_module("nmrglue_pipe_proc_ft", auto=True)
+        ##self.add_processing_module(ng.pipe_proc.di)
+        ##self.add_processing_module(ng.pipe_proc.tp)
+        #self.add_processing_module("nmrglue_pipe_proc_ft", auto=True)
+        #self.add_processing_module("nmrglue_pipe_proc_ft", auto=True)
+        #self.add_processing_module("nmrglue_pipe_proc_ft", auto=True)
+        #self.add_processing_module("nmrglue_pipe_proc_ft", auto=True)
+        ##self.add_processing_module(ng.pipe_proc.tp)
+        
+        # Process active spectrum
+        self.session.get_active_spectrum().process()
+        
+        # Display active spectrum
+        #self.display_spectrum(self.session.get_active_spectrum())
+    #endregion
+
+
+    def update_spectra_list(self) -> None:
+        """Sync spectra list widget with spectra list from Session class.
+        """
+        current_row = self.spectra_list.currentRow()
+        for x in range(self.spectra_list.count()):
+            self.spectra_list.takeItem(x)
+        self.spectra_list.addItems(self.session.get_spectra_base_paths())
+        self.spectra_list.setCurrentRow(current_row)
+        
+    
+    def select_spectrum(self, index: int) -> None:
+        """Make spectrum specified by index the currently active spectrum
+
+        Args:
+            index (int): Index of spectrum.
+        """
+        # Select appropriate row in the spectra list widget
+        self.spectra_list.setCurrentRow(index)
+        # Set the currently active spectrum in the session class
+        self.session.set_active_spectrum_index(index)
+        # Set the window title to reflect the currently active spectrum
+        self.setWindowTitle(f"NMR Fido - {self.session.get_active_spectrum().base_path}")
+        # Display the newly active spectrum
+        #self.display_spectrum(self.session.get_active_spectrum())
+    
+    #region Processing module
+    def add_processing_module(self, module_name: str, *args, **kwargs) -> None:
+        #print(f"MainWindow.add_processing_module -> {module_name=}")
+        active_index = self.session.get_active_spectrum_index()
+        parent_widget_layout = self.controls_group_layout.itemAt(active_index).widget().layout()
+        # create widgets
+        module = self.processing_modules.get_module(module_name)
+        
+        if module["widget_generator"]:
+            parent_widget_layout.addWidget(module["widget_generator"]())
+        else:
+            # Auto-generate control widget using function args
+            module_args = module["args"]
+            #print(f"MainWindow.add_processing_module -> {module_args=}")
+            
+            collapsible_content = QWidget()
+            collapsible_content.setSizePolicy(
+                QSizePolicy.Policy.Expanding,
+                QSizePolicy.Policy.Minimum
+            )
+            collapsible_content_layout = QVBoxLayout()
+            collapsible_content_layout.setContentsMargins(0, 0, 0, 0)
+            collapsible_content_layout.setSpacing(0)
+            collapsible_content_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+            for arg in module_args.keys():
+                if arg not in ["dic", "data"]:
+                    #print(arg, module_args[arg])
+                    
+                    arg_widget = QWidget()
+                    #arg_widget.setSizePolicy(
+                    #    QSizePolicy.Policy.Minimum,
+                    #    QSizePolicy.Policy.Minimum
+                    #)
+                    #arg_widget.setMaximumHeight(30)
+                    arg_widget_layout = QHBoxLayout()
+                    arg_widget_layout.addWidget(QLabel(arg))
+                    match module_args[arg]["type"]:
+                        case "bool":
+                            arg_widget_layout.addWidget(QCheckBox())
+                        case _:
+                             arg_widget_layout.addWidget(QLineEdit())
+                    arg_widget.setLayout(arg_widget_layout)
+                    collapsible_content_layout.addWidget(arg_widget)
+            
+            collapsible_content.setLayout(collapsible_content_layout)
+            collapsible = QCollapsible(module["function_name"], collapsible_content, expanded=False)
+            parent_widget_layout.addWidget(collapsible)
+        
+        # add function to spectrum processor
+        self.session.get_active_spectrum().processor.add_operation(module["operation"], *args, **kwargs)
+    
+    
+    def default_processing(self):
+        self.add_processing_module("nmrglue_pipe_proc_sp")
+        self.add_processing_module("nmrglue_pipe_proc_zf", auto=True)
+        self.add_processing_module("nmrglue_pipe_proc_ft")
+        # ps
+        self.add_processing_module("nmrglue_pipe_proc_di")
+        
+        self.add_processing_module("nmrglue_pipe_proc_tp")
+        
+        self.add_processing_module("nmrglue_pipe_proc_sp")
+        self.add_processing_module("nmrglue_pipe_proc_zf", auto=True)
+        self.add_processing_module("nmrglue_pipe_proc_ft")
+        # ps
+        self.add_processing_module("nmrglue_pipe_proc_di")
+        
+        self.add_processing_module("nmrglue_pipe_proc_tp")
+    
+    
+    def update_processing_controls(self, current_item, previous_item) -> None:
+        if not current_item:
+            return
+        
+        current_row = self.spectra_list.currentRow()
+        
+        for i in range(self.controls_group_layout.count()):
+            widget = self.controls_group_layout.itemAt(i).widget()
+            if widget:
+                widget.setVisible(False)
+
+        widget_to_show = self.controls_group_layout.itemAt(current_row).widget()
+        if widget_to_show:
+            widget_to_show.setVisible(True)
+    #endregion
         
         
     def create_phasing_controls(self, dimension_index: int, spectrum: Spectrum) -> QGroupBox:
@@ -191,20 +637,6 @@ class MainWindow(QMainWindow):
         return controls
     
     
-    def create_import_buttons(self, spectrum: Spectrum) -> QHBoxLayout:
-        import_spectrum_buttons_layout = QHBoxLayout()
-        # Import spectrum button
-        import_spectrum_button = QPushButton(text="Import spectrum")
-        import_spectrum_button.clicked.connect(lambda: self.import_spectrum_button_callback(spectrum))
-        import_spectrum_buttons_layout.addWidget(import_spectrum_button)
-        
-        # Import demo spectrum button
-        import_demo_spectrum_button = QPushButton(text="Import demo spectrum")
-        import_demo_spectrum_button.clicked.connect(lambda: self.import_demo_spectrum_button_callback(spectrum))
-        import_spectrum_buttons_layout.addWidget(import_demo_spectrum_button)
-        return import_spectrum_buttons_layout
-    
-    
     def create_horizontal_trace(self) -> pg.GraphicsLayoutWidget:
         plot_graph_glw = pg.GraphicsLayoutWidget()
         plot_graph_glw.setObjectName("horizontal_trace")
@@ -225,120 +657,19 @@ class MainWindow(QMainWindow):
         plot_graph.hideAxis("left")
         plot_graph.hideAxis("bottom")
         self.h_trace_line = plot_graph.plot()
+        self.h_trace_line.setPen("black")
         return plot_graph_glw
 
 
-    def create_spectrum_axes(self, parent_layout) -> None:
-        ax_h_height = 50
-        ax_v_width = 100
-        axs = [
-            {"orientation": "h", "grid_pos": (0,1), "label_first": True},
-            {"orientation": "v", "grid_pos": (1,0), "label_first": True},
-            {"orientation": "v", "grid_pos": (1,2), "label_first": False},
-            {"orientation": "h", "grid_pos": (2,1), "label_first": False}
-        ]
-        for ax_dict in axs:
-            grid_pos = ax_dict["grid_pos"]
-            orientation = ax_dict["orientation"]
-            ax_label_name = "F2 [ppm]" if orientation == "h" else "F1 [ppm]"
-            label_first = ax_dict["label_first"]
+    def display_spectrum(self, spectrum: Spectrum=None) -> None:
+        if spectrum is None:
+            spectrum = self.session.get_active_spectrum()
             
-        
-            # Axis container
-            ax = QWidget()
-            ax.setObjectName("spectrum_ax")
-            ax.setVisible(False)
-            if orientation == "h":
-                ax.setFixedHeight(ax_h_height)
-            else:
-                ax.setFixedWidth(ax_v_width)
-            #h_axis_bottom.setStyleSheet("border-style: solid; border-width: 2px; border-color:black")
-            ax_layout = QVBoxLayout() if orientation == "h" else QHBoxLayout()
-            ax_layout.setContentsMargins(0,0,0,0)
-            ax_layout.setSpacing(0)
-            
-            # Ticks container
-            ax_ticks = QLabel()
-            ax_ticks.setObjectName("spectrum_ticks")
-            
-            # Axis label
-            ax_label = QLabel(ax_label_name, alignment=Qt.AlignmentFlag.AlignCenter)
-            
-            if label_first:
-                ax_layout.addWidget(ax_label)
-                ax_layout.addWidget(ax_ticks)
-            else:
-                ax_layout.addWidget(ax_ticks)
-                ax_layout.addWidget(ax_label)
-            
-            ax.setLayout(ax_layout)
-            parent_layout.addWidget(ax, *grid_pos)
-    
-    
-    def initialize_empty_spectrum(self) -> QPixmap:
-        """Generate a 1x1 empty pixmap so the spectrum can be
-        initialized with it.
-
-        Returns:
-            QPixmap: Empty pixmap.
-        """
-        img = QImage(0, 0, QImage.Format.Format_Indexed8)
-        background_color = QColor("#F0F0F0")
-        background_color.setAlpha(0)
-        img.fill(background_color)
-        return QPixmap.fromImage(img)
-    
-    
-    def import_spectrum(self, spectrum: Spectrum, file_path: str) -> None:
-        """Import spectrum from specified path.
-
-        Args:
-            spectrum (Spectrum): Main spectrum class.
-            file_path (str): File path to fid file to import.
-        """
-        print(f"MainWindow.import_spectrum -> Loading:{file_path}")
-        
-        # Hand file off to spectrum class to load data and process.
-        spectrum.load(file_path)
-        
-        
-        self.setWindowTitle(f"NMR Fido - {os.path.basename(file_path)}")
-        
+        spectrum.process()
+        print(f"MainWindow.display_spectrum -> {spectrum=}")
         
         self.plot_ax.setLabels(bottom=f'{spectrum.dic["FDF2LABEL"]} [ppm]', right=f'{spectrum.dic["FDF1LABEL"]} [ppm]')
         
-        # Display processsed spectrum.
-        self.display_spectrum(spectrum)
-        
-        # Enable phasing controls.
-        self.toggle_phasing_controls()
-
-
-    def import_spectrum_button_callback(self, spectrum: Spectrum) -> None:
-        """Open a dialog for file browsing then imporrt
-        specified fid file.
-
-        Args:
-            spectrum (Spectrum):  Main spectrum class.
-        """
-        files = QFileDialog.getOpenFileName(
-            self,
-            'Open file',
-            'c:\\',
-        )       
-        self.import_spectrum(spectrum, files[0])
-    
-    
-    def import_demo_spectrum_button_callback(self, spectrum: Spectrum) -> None:
-        """Import demo spectrum from nmrglue wiki.
-
-        Args:
-            spectrum (Spectrum): Main spectrum class.
-        """
-        self.import_spectrum(spectrum, "src/test.fid")
-
-
-    def display_spectrum(self, spectrum: Spectrum) -> None:    
         limitsX = [70, 40]
         limitsY = [135, 100]
         
@@ -435,141 +766,16 @@ class MainWindow(QMainWindow):
         else:
             for contour in self.plot_contours:
                 contour.setData(data)
+                
+        
         print(f"MainWindow.display_spectrum -> done")
         self.app.processEvents()
-        
-    
-    
-    def show_axis(self, spectrum: Spectrum) -> None:
-        axs = self.findChildren(QWidget, "spectrum_ax")
-        axis_config = {
-            "top": False,
-            "left": False,
-            "right": True,
-            "bottom": True
-        }
-        for ax in axs:
-            
-            ax_ticks = ax.findChild(QLabel, "spectrum_ticks")
-            ax_children = [c.objectName() for c in ax.children() if isinstance(c, QLabel)]
-            ax_label_first = True if ax_children.index("spectrum_ticks") == 1 else False
-            ax_orientation = "h" if ax_ticks.width() > ax_ticks.height() else "v"
-            
-            ax_position = ""
-            if ax_orientation == "h" and ax_label_first:
-                ax_position = "top"
-            elif ax_orientation == "v" and ax_label_first:
-                ax_position = "left"
-            elif ax_orientation == "v" and not ax_label_first:
-                ax_position = "right"
-            elif ax_orientation == "h" and not ax_label_first:
-                ax_position = "bottom"
-                
-            if axis_config[ax_position] != True:
-                continue
-            
-            ax.setVisible(True)
-            ax_ticks_w = ax_ticks.width()
-            ax_ticks_h = ax_ticks.height()
-            ax_orientation = "h" if ax_ticks.width() > ax_ticks.height() else "v"
-            
-            ax_label_name = f'{spectrum.dic["FDF2LABEL"]} [ppm]' if ax_orientation == "h" else f'{spectrum.dic["FDF1LABEL"]}\n[ppm]'
-            ax_label = ax.findChild(QLabel, "")
-            ax_label.setText(ax_label_name)
-            
-            
-
-            pixmap = QPixmap(ax_ticks_w, ax_ticks_h)
-            background_color = QColor("#F0F0F0")
-            background_color.setAlpha(1)
-            pixmap.fill(background_color)
-            
-            painter = QPainter(pixmap)
-            pen = QPen()
-            pen.setColor(QColor("#F0F0F0"))
-            pen.setWidth(2)
-            painter.setPen(pen)
-            
-            
-            ax_ppm_scale = spectrum.dim1_ppm_scale if ax_orientation == "h" else spectrum.dim0_ppm_scale
-            
-            def generate_ticks(ppm_scale: np.array, axis_size: float, nr_ticks:int=6) -> list:
-                ticks_ppm = np.linspace(np.floor(ppm_scale[0]), np.ceil(ppm_scale[-1]), nr_ticks)
-                ticks_unitless = np.absolute((ticks_ppm - ppm_scale[0]) / (ppm_scale[0] - ppm_scale[-1]))
-                ticks_px = list(ticks_unitless * axis_size)
-                ticks_px = [int(p) for p in ticks_px]
-                return ticks_ppm, ticks_px
-                
-            ticks_labels, ticks_positions = generate_ticks(ax_ppm_scale, max(ax_ticks_w, ax_ticks_h), 10)
-            
-            tick_length = 5   # length of each tick
-            text_width = 40
-            text_pos = 10
-            text_height = 10
-
-            # Loop to draw ticks vertically
-            for i in range(len(ticks_positions)):
-                p = ticks_positions[i]
-                label = ticks_labels[i]
-                if ax_orientation == "h":
-                    if p - text_width < 0 or p + text_width > ax_ticks_w:
-                        continue
-                    
-                    if ax_label_first:
-                        ticks_start_pos = (p, ax_ticks_h)
-                        ticks_end_pos = (p, ax_ticks_h-tick_length)
-                        text_rectF = QRectF(p-text_width/2, ax_ticks_h-text_pos-text_height, text_width, text_height)
-                    else:
-                        ticks_start_pos = (p, 0)
-                        ticks_end_pos = (p, tick_length)
-                        text_rectF = QRectF(p-text_width/2, text_pos, text_width, text_height)
-                else:
-                    if p - text_height < 0 or p + text_height > ax_ticks_h:
-                        continue
-                    
-                    if ax_label_first:
-                        ticks_start_pos = (ax_ticks_w, p)
-                        ticks_end_pos = (ax_ticks_w-tick_length, p)
-                        text_rectF = QRectF(ax_ticks_w-text_pos-text_width, p-text_height/2, text_width, text_height)
-                    else:
-                        ticks_start_pos = (0, p)
-                        ticks_end_pos = (tick_length, p)
-                        text_rectF = QRectF(text_pos, p-text_height/2, text_width, text_height)
-                    
-                painter.drawLine(*ticks_start_pos, *ticks_end_pos)
-                painter.drawText(
-                    text_rectF,
-                    Qt.AlignmentFlag.AlignCenter,
-                    str(np.around(label, 2))
-                )
-            
-            painter.end()
-            ax_ticks.setPixmap(pixmap)
-    
-    
-    def toggle_phasing_controls(self) -> None:
-        """Find all phasing controls float inputs and sliders and
-        enable them.
-        """
-        h_trace = self.findChild(pg.GraphicsLayoutWidget, "horizontal_trace")
-        if h_trace:
-         h_trace.setVisible(True)
-        
-        
-        for i in [0, 1]:
-            for j in [0, 1]:
-                phasing_input = self.findChild(QLineEdit, f"dim{i}_p{j}_input")
-                phasing_input.setEnabled(not phasing_input.isEnabled())
-                
-                phasing_slider = self.findChild(QSlider, f"dim{i}_p{j}_slider")
-                phasing_slider.setEnabled(not phasing_slider.isEnabled())
     
     
     def threaded(self, *args):
         """Run a function (args[0]) with arguments (args[1:]) on a different thread.
         """
-        worker = Worker(*args)
-        self.threadpool.start(worker)
+        self.threadpool.start(Worker(*args))
     
     
     def phasing_input_callback(self, spectrum: Spectrum, identifier: str, phasing_input_text: str) -> None:
@@ -650,7 +856,7 @@ class MainWindow(QMainWindow):
         spectrum.phase([float(p) if p != "" else 0.0 for p in phasing_values])
         
         # Display phased spectrum
-        self.display_spectrum(spectrum)
+        #self.display_spectrum(spectrum)
 
 
 class Worker(QRunnable):
@@ -680,3 +886,95 @@ class Worker(QRunnable):
         Initialise the runner function with passed args, kwargs.
         '''
         self.fn(*self.args, **self.kwargs)
+
+#region QCollapsible
+class QCollapsible(QWidget):
+    """Custom collapsible PySide6 widget.
+    """
+    def __init__(self, title: str, content: QWidget, expanded: bool = True):
+        """Constructor.
+
+        Args:
+            title (str): Title in the header of the collapsible widget.
+            content (QWidget): Child widget that is collapsed/expanded.
+            expanded (bool, optional): Specify if the widget should be expanded when created.
+        """
+        # Parent class constructor
+        super().__init__()
+        
+        # Set widget width to be 100% of parent and of variable but minimal height
+        self.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Minimum
+        )
+        
+        # Create layout
+        self.main_layout = QVBoxLayout()
+        self.main_layout.setContentsMargins(0, 0, 0, 0)
+        self.setLayout(self.main_layout)
+        
+        # Header
+        self.expand_button = QPushButton()
+        self.expand_button.setMinimumHeight(30)
+        # Header layout
+        self.expand_button_layout = QHBoxLayout()
+        self.expand_button_layout.setContentsMargins(10, 5, 10, 5)
+        self.expand_button_layout.setSpacing(5)
+        
+        # Header title
+        self.expand_button_layout.addWidget(QLabel(title))
+        # Spacer
+        self.expand_button_layout.addSpacerItem(
+            QSpacerItem(10, 10, QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
+        )
+        # Header triangle icon
+        self.expand_button_icon = QLabel()
+        self.expand_button_layout.addWidget(self.expand_button_icon)
+        
+        # Set layout and add button
+        self.expand_button.setLayout(self.expand_button_layout)
+        self.main_layout.addWidget(self.expand_button)
+        
+        # Add child content
+        self.content = content
+        self.main_layout.addWidget(self.content)
+        
+        self.has_children = True if self.content.layout().count() != 0 else False
+        
+        self.icon_pixmap_expanded = QPixmap("src/qt_gui/assets/icon_expanded.png").scaled(10, 10, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        self.icon_pixmap_collapsed = QPixmap("src/qt_gui/assets/icon_collapsed.png").scaled(10, 10, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        
+        self.expanded = expanded
+        if self.has_children:
+            self.expand_button.clicked.connect(self.toggle)
+            
+            # Create pixmaps and set it to the button icon
+            self.expand_button_icon.setPixmap(self.icon_pixmap_expanded if self.expanded else self.icon_pixmap_collapsed)
+            
+            # Widget is expanded upon creation, collapse it if it shouldn't be
+            if not self.expanded:
+                self.collapse()
+        
+        
+    def toggle(self) -> None:
+        """Expand/collapse widget
+        """
+        # Check current state
+        if self.expanded:
+            # If widget is expanded -> collapse it and change the icon
+            self.collapse()
+        else:
+            # If widget is collapse -> expand it and change the icon
+            self.expand()
+        # Toggle state variable
+        self.expanded = not self.expanded
+        
+    
+    def collapse(self) -> None:
+        self.content.setMaximumHeight(0)
+        self.expand_button_icon.setPixmap(self.icon_pixmap_collapsed)
+        
+    
+    def expand(self) -> None:
+        self.content.setMaximumHeight(999999)
+        self.expand_button_icon.setPixmap(self.icon_pixmap_expanded)
