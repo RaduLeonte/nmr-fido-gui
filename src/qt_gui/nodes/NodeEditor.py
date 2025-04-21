@@ -7,6 +7,7 @@ from PySide6.QtWidgets import *
 from PySide6.QtGui import *
 
 
+
 class Graph:
     def __init__(self):
         self.nodes = []
@@ -32,11 +33,11 @@ class Graph:
 
 
 class NodeEditor(QGraphicsView):
-    def __init__(self, scene):
+    def __init__(self, scene, background_color="#1d1d1d"):
         super().__init__(scene)
         self.setRenderHints(self.renderHints() | QPainter.RenderHint.Antialiasing | QPainter.SmoothPixmapTransform)
         self.setDragMode(QGraphicsView.RubberBandDrag)
-        self.setBackgroundBrush(QColor("#1d1d1d"))
+        self.setBackgroundBrush(QColor(background_color))
         self.setCursor(Qt.CursorShape.ArrowCursor)
         self._mouse_offset = QPointF()
         self._pressed_item = None
@@ -154,7 +155,7 @@ class NodeEditor(QGraphicsView):
 
 
 class Node(QGraphicsProxyWidget):
-    def __init__(self, scene_ref, title="Node", pos=QPointF(0, 0), node_structure: dict=None, header_color: str ="#1d1d1d"):
+    def __init__(self, scene_ref, title="Node", pos=QPointF(0, 0), node_structure: dict=None, header_color: str ="#121212"):
         super().__init__()
 
         self.scene_ref = scene_ref
@@ -177,7 +178,7 @@ class Node(QGraphicsProxyWidget):
         self.container_layout.setContentsMargins(0, 0, 0, 0) # left top right bottom
 
         self.inner_frame = QFrame()
-        self.inner_frame.setObjectName("InnerFrame")
+        self.inner_frame.setObjectName("NodeInnerFrame")
 
         self.inner_frame_layout = QVBoxLayout()
         self.inner_frame_layout.setSpacing(0)
@@ -420,7 +421,6 @@ class NodeDropdown(QWidget):
         layout.addWidget(self.label_widget)
         
         self.dropdown = QComboBox()
-        self.dropdown.setStyleSheet("QComboBox { background-color: #303030; color: white; }")
         layout.addWidget(self.dropdown)
         
         self.dropdown.addItems(items)
@@ -667,7 +667,7 @@ class TestNode(Node):
 
 class ImportDataNode(Node):
     def __init__(self, scene_ref, pos=QPointF(0, 0)):
-        super().__init__(scene_ref, title="Import data", pos=pos, header_color="#1d1d1d")
+        super().__init__(scene_ref, title="Import data", pos=pos, header_color="#121212")
         
     def _build_custom_body(self) -> None:
         self.node_body_layout.addWidget(NodeOutput("Data", "array", proxy_ref=self))
@@ -698,7 +698,7 @@ class ImportDataNode(Node):
 
 class PlotDataNode(Node):
     def __init__(self, scene_ref, pos=QPointF(0, 0)):
-        super().__init__(scene_ref, title="Plot data", pos=pos, header_color="#1d1d1d")
+        super().__init__(scene_ref, title="Plot data", pos=pos, header_color="#121212")
         
     def _build_custom_body(self) -> None:
         self.node_body_layout.addWidget(NodeInput("Data", "array", proxy_ref=self))
@@ -710,10 +710,11 @@ class PlotDataNode(Node):
 
 class EvaluateGraphNode(Node):
     def __init__(self, scene_ref, pos=QPointF(0, 0)):
-        super().__init__(scene_ref, title="Evaluate graph", pos=pos, header_color="#1d1d1d")
+        super().__init__(scene_ref, title="Evaluate graph", pos=pos, header_color="#121212")
         
     def _build_custom_body(self) -> None:
         button = QPushButton("Evaluate graph")
+        display_node = next((obj for obj in graph.nodes if isinstance(obj, DisplayDataNode)), None)
         button.clicked.connect(lambda: graph.evaluate(display_node))
         self.node_body_layout.addWidget(button)
         

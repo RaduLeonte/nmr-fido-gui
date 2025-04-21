@@ -7,30 +7,24 @@ from inspect import Signature
 import re
 from collections import defaultdict
 
-from PySide6.QtCore import (
-    Qt,
-    QThreadPool, QRunnable, Slot,
-    QSize,
-)
-from PySide6.QtWidgets import (
-    QApplication, QMainWindow,
-    QGridLayout, QGroupBox, QHBoxLayout, QVBoxLayout,
-    QWidget, QLabel, QLineEdit, QSlider, QPushButton, QSizePolicy,
-    QFileDialog, QListWidget, QSplitter, QSpacerItem, QCheckBox,
-    QScrollArea, QWidgetAction,
-)
-from PySide6.QtGui import (
-    QAction,
-    QResizeEvent, QDragEnterEvent, QDragLeaveEvent, QDropEvent,
-    QPixmap, QColor,
-    QTransform,
-    QDoubleValidator,
-)
+from PySide6.QtCore import *
+from PySide6.QtWidgets import *
+from PySide6.QtGui import *
 import pyqtgraph as pg
 
 from src.session import Session
 from src.spectrum import Spectrum
 from src.processing_modules import ProcessingModules
+from src.qt_gui.nodes.NodeEditor import *
+
+
+COLOR_PALETTE = {
+    "--text-color": "#e0e0e0",
+    "--bg-color1": "#121212",
+    "--bg-color2": "#1e1e1e",
+    "--bg-color3": "#252525",
+    "--border-color": "#505050",
+}
 
 
 def start_app(args: list):
@@ -60,45 +54,107 @@ class MainWindow(QMainWindow):
         # Parent constructor
         super().__init__()
         
-        # Set app
         self.app = app
-        
-        # Initialize classes
         self.session = Session()
         self.processing_modules = ProcessingModules()
-        
-        """
-        Window config
-        """
-        #region Window config
-        self.setWindowTitle("NMR Fido")
-        #self.setWindowIcon(QIcon("icon.png"))
-        self.setAcceptDrops(True)
-        
-        # Minimum size
-        min_size = (820, 400)
-        self.setMinimumSize(QSize(*min_size))
-        
-        # Set init size based on screen aspect ratio
-        screen_size = QApplication.primaryScreen().availableSize()
-        if screen_size.width() >= screen_size.height():
-            app_width = int(screen_size.width()*(2/3))
-            app_size = QSize(app_width, int(app_width*(min_size[1]/min_size[0])))
-        else:
-            app_height = int(screen_size.height()*(2/3))
-            app_size = QSize(int(app_height*(min_size[0]/min_size[1])), app_height)
-        self.resize(app_size)
-        #endregion
-        
-        
-        """Thread pool"""
         self.threadpool = QThreadPool()
         
+        self._create_menu()
+        self._init_ui()
         
+        pass
+    
+    
+    #region Events
+    def resizeEvent(self, e: QResizeEvent) -> None:
+        """Main window resize event handler
+
+        Args:
+            e (QEvent): _description_
         """
-        Menu
+        # Resize the overlay widget so it always fills the window
+        self.overlay.resize(self.size())
+        
+        # Call base class resiz even
+        super().resizeEvent(e)
+        return
+    
+    
+    #region FileIO
+    def dragEnterEvent(self, e: QDragEnterEvent) -> None:
+        """Main window drag enter event handler.
+
+        Args:
+            e (QDragEnterEvent): Event passed when mouse enters the window.
         """
-        #region Menu
+        
+        # Check if user is dragging files
+        if not e.mimeData().hasUrls():
+            # No files in payload, ignore
+            e.ignore()
+        else:
+            # Payload had files, check if there are files with accepted formats
+            valid_files = [
+                f.toLocalFile() for f in e.mimeData().urls()
+                if any(f.toLocalFile().lower().endswith(ext) for ext in [".fid", ".ft2"])
+            ]
+            # Check if any valid files were found
+            if len(valid_files) != 0:
+                # There are valid files, accept the payload and turn on green overlay
+                e.accept()
+                self._set_css_attribute(self.overlay, "status", "valid")
+                file_list_text = ''.join(f + '\n' for f in valid_files)
+                self.overlay.setText(
+                    f"Import files:\n{file_list_text}"
+                )
+            else:
+                # There were no valid files, ignore payload and turn on red overlay
+                e.ignore()
+                self._set_css_attribute(self.overlay, "status", "invalid")
+                self.overlay.setText(
+                    f"Invalid file format."
+                )
+            # Make sure overlay is on top
+            self.overlay.raise_()
+            # Show overlay
+            self.overlay.show()
+        return
+    
+    
+    def dragLeaveEvent(self, e: QDragLeaveEvent) -> None:
+        """Main window drag leave event handler.
+
+        Args:
+            e (QDragLeaveEvent): Event passed when mouse leaves the window.
+        """
+        # Hide overlay on mouse leave
+        self.overlay.hide()
+        return
+    
+    
+    def dropEvent(self, e: QDropEvent) -> None:
+        """Main window drag leave event handler.
+
+        Args:
+            e (QDropEvent): Event passed when dropping files onto the window.
+        """
+        # Hide overlay
+        self.overlay.hide()
+        
+        # Fish out files with accepted file formats from the payload
+        valid_files = [
+            f.toLocalFile() for f in e.mimeData().urls()
+            if any(f.toLocalFile().lower().endswith(ext) for ext in [".fid", ".ft2"])
+        ]
+        
+        # Send valid files to be imported
+        self.import_spectra(valid_files)
+        return
+    #endregion FileIO
+    #endregion Events
+    
+    #region Menu
+    def _create_menu(self) -> None:
         menu = self.menuBar()
         
         """File"""
@@ -201,21 +257,77 @@ class MainWindow(QMainWindow):
         add_default_processing = QAction("Add default processing (2D)", self)
         add_default_processing.triggered.connect(lambda: self.default_processing())
         add_proc_module_submenu.addAction(add_default_processing)
-        #endregion
         
-        #endregion
+        return
+    #endregion Menu
+    
+    
+    #region UI
+    def _init_ui(self) -> None:
+        
+        def load_stylesheet(app: QApplication, path: str, variables: dict) -> None:
+            with open(path, "r") as f:
+                stylesheet = f.read()
 
+            # Replace custom CSS variables like var(--text-color)
+            for key, value in variables.items():
+                stylesheet = stylesheet.replace(f"var({key})", value)
 
+            app.setStyleSheet(stylesheet)
+            return
+        
+        self.app.setStyle("fusion")
+        load_stylesheet(self.app, "src/styles.css", COLOR_PALETTE)
+        
+        
+        #region Window config
+        self.setWindowTitle("NMR Fido")
+        #self.setWindowIcon(QIcon("icon.png"))
+        self.setAcceptDrops(True)
+        
+        # Minimum size
+        min_size = (820, 400)
+        self.setMinimumSize(QSize(*min_size))
+        
+        # Set init size based on screen aspect ratio
+        ratio = 0.8
+        screen_size = QApplication.primaryScreen().availableSize()
+        if screen_size.width() >= screen_size.height():
+            app_width = int(screen_size.width()*ratio)
+            app_size = QSize(app_width, int(app_width*(min_size[1]/min_size[0])))
+        else:
+            app_height = int(screen_size.height()*ratio)
+            app_size = QSize(int(app_height*(min_size[0]/min_size[1])), app_height)
+        self.resize(app_size)
+        
         """
         Main container
         """
-        layout = QHBoxLayout()
-        splitter = QSplitter(Qt.Horizontal)
+        app_layout = QHBoxLayout()
         
-        '''
-        Window Region: Spectra list
-        '''
-        #region Spectra list
+        splitter = QSplitter(Qt.Horizontal)
+        app_layout.addWidget(splitter)
+        
+        splitter.addWidget(self._create_file_explorer())
+        #splitter.addWidget(self._create_processing_controls())
+        splitter.addWidget(self._create_node_editor())
+        splitter.addWidget(self._create_plot())
+        splitter.setSizes(
+            [
+                0.1*app_size.width(),
+                0.5*app_size.width(),
+                0.4*app_size.width()
+            ]
+        )
+        
+        
+        self._create_overlay()
+        
+        self.setCentralWidget(QWidget(layout=app_layout))
+        return
+    
+    
+    def _create_file_explorer(self) -> QGroupBox:
         spectra_list_container = QGroupBox("Spectra List")
         spectra_list_container.setMinimumWidth(200)
         spectra_list_container_layout = QVBoxLayout()
@@ -227,13 +339,11 @@ class MainWindow(QMainWindow):
         
         spectra_list_container_layout.addStretch()
         spectra_list_container.setLayout(spectra_list_container_layout)
-        #endregion
         
-        '''
-        Window Region: Processing controls
-        '''
-        #region Processing controls
-        
+        return spectra_list_container
+    
+    
+    def _create_processing_controls(self) -> QGroupBox:
         controls_group_container = QGroupBox("Processing")
         controls_group_container.setMinimumWidth(300)
         controls_group_container_layout = QVBoxLayout()
@@ -255,23 +365,64 @@ class MainWindow(QMainWindow):
         
         controls_group_container_layout.addWidget(controls_group_scroll)
         controls_group_container.setLayout(controls_group_container_layout)
-        #endregion
         
-        '''
-        Window Region: Spectrum display
-        '''
-        #region Spectrum display
+        return controls_group_container
+    
+    
+    def _create_node_editor(self) -> QGroupBox:
+        node_editor_container = QGroupBox("Node Editor")
+        node_editor_container.setMinimumWidth(600)
+        node_editor_container_layout = QVBoxLayout()
+        node_editor_container.setLayout(node_editor_container_layout)
+        
+        node_editor_scene = QGraphicsScene()
+        width = 10_000
+        height = 5_000
+        node_editor_scene.setSceneRect(-width/2, -height/2, width, height)
+        node_editor_view = NodeEditor(node_editor_scene, background_color=COLOR_PALETTE["--bg-color1"])
+        node_editor_container_layout.addWidget(node_editor_view)
+
+        node_editor_scene.addItem(ImportDataNode(node_editor_scene, QPointF(-300, 0)))
+        node_editor_scene.addItem(TestNode(node_editor_scene))
+        node_editor_scene.addItem(PlotDataNode(node_editor_scene, QPointF(300, 0)))
+        
+        value_node_1 = ValueIntNode(node_editor_scene, QPointF(-500, -300))
+        value_node_2 = ValueIntNode(node_editor_scene, QPointF(-500, -150))
+        add_node = AddNode(node_editor_scene, QPointF(-200, -300))
+        display_node = DisplayDataNode(node_editor_scene, QPointF(100, -300))
+        
+        graph.add_node(value_node_1)
+        graph.add_node(value_node_2)
+        graph.add_node(add_node)
+        graph.add_node(display_node)
+        
+        graph.connect(value_node_1.outputs["output"], add_node.inputs["input_1"])
+        graph.connect(value_node_2.outputs["output"], add_node.inputs["input_2"])
+        graph.connect(add_node.outputs["output"], display_node.inputs["input"])
+        
+        node_editor_scene.addItem(value_node_1)
+        node_editor_scene.addItem(value_node_2)
+        node_editor_scene.addItem(add_node)
+        node_editor_scene.addItem(display_node)
+        node_editor_scene.addItem(EvaluateGraphNode(node_editor_scene, QPointF(400, -300)))
+        
+        
+        return node_editor_container
+    
+    
+    def _create_plot(self) -> QGroupBox:
         spectrum_container = QGroupBox("Display")
         spectrum_container.setMinimumWidth(500)
         spectrum_container.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         spectrum_container_layout = QVBoxLayout()
+        spectrum_container.setLayout(spectrum_container_layout)
         
-        
-        """Plot grid"""
         plot_container = QWidget()
         plot_container_layout = QGridLayout()
         plot_container_layout.setHorizontalSpacing(0)
         plot_container_layout.setVerticalSpacing(0)
+        plot_container.setLayout(plot_container_layout)
+        spectrum_container_layout.addWidget(plot_container)
         
         """Main plot"""
         self.plot = pg.PlotWidget()
@@ -281,157 +432,39 @@ class MainWindow(QMainWindow):
         self.plot_ax.showAxis("right")
         self.plot_ax.hideAxis("left")
         self.plot_ax.getAxis("bottom").setLabel("Dim 0 [ppm]")
-        self.plot_ax.getAxis("bottom").setTextPen("black")
+        self.plot_ax.getAxis("bottom").setTextPen(COLOR_PALETTE["--text-color"])
         self.plot_ax.getAxis("right").setLabel("Dim 1\n[ppm]")
         self.plot_ax.getAxis("right").label.setRotation(0)
         self.plot_ax.getAxis("right").label.setTextWidth(60)
-        self.plot_ax.getAxis("right").setTextPen("black")
-        self.plot_ax.getViewBox().setBackgroundColor("w")
+        self.plot_ax.getAxis("right").setTextPen(COLOR_PALETTE["--text-color"])
+        self.plot_ax.getViewBox().setBackgroundColor(COLOR_PALETTE["--bg-color1"])
         self.plot.setBackground(QColor(0, 0, 0, 0))
         plot_layout.addItem(self.plot_ax)
         self.plot_contours = []
         self.plot_levels = []
         plot_container_layout.addWidget(self.plot, 1, 1)
         
-        """Horizontal trace"""
-        #plot_container_layout.addWidget(self.create_horizontal_trace(), 2, 1)
         
-        """Plot axes"""
-        
-        # Add plot grid container to main
-        plot_container.setLayout(plot_container_layout)
-        spectrum_container_layout.addWidget(plot_container)
-        
-        # Add spectrum window region to main window
-        spectrum_container.setLayout(spectrum_container_layout)
-        #endregion
-        
-        
-        """
-        Splitter
-        """
-        #region Splitter
-        splitter.addWidget(spectra_list_container)
-        splitter.addWidget(controls_group_container)
-        splitter.addWidget(spectrum_container)
-        splitter.setSizes(
-            [
-                0.2*app_size.width(),
-                0.2*app_size.width(),
-                0.6*app_size.width()
-            ]
-        )
-        layout.addWidget(splitter)
-        #endregion
-        
-        """
-        Overlay
-        """
-        #region Overlay
+        return spectrum_container
+    
+    
+    def _create_overlay(self) -> None:
         self.overlay = QLabel("", self)
+        self.overlay.setObjectName("Overlay")
         self.overlay.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.overlay.setStyleSheet("""
-            background-color: rgba(0, 0, 0, 100);
-            font-weight: bold;
-        """)
         self.overlay.setAttribute(Qt.WA_TransparentForMouseEvents, True)
         self.overlay.hide()
-        #endregion
-        
-        # Set main layout to be layout of central widget
-        self.setCentralWidget(QWidget(layout=layout))
+        return
+    #endregion UI
     
     
-    #region Main window resize event
-    def resizeEvent(self, e: QResizeEvent) -> None:
-        """Main window resize event handler
-
-        Args:
-            e (QEvent): _description_
-        """
-        # Resize the overlay widget so it always fills the window
-        self.overlay.resize(self.size())
-        
-        # Call base class resiz even
-        super().resizeEvent(e)
-    #endregion
+    def _set_css_attribute(self, target: any, key: str, value: str) -> None:
+        target.setProperty(key, value)
+        target.style().unpolish(target)
+        target.style().polish(target)
+        return
     
     
-    #region File IO
-    def dragEnterEvent(self, e: QDragEnterEvent) -> None:
-        """Main window drag enter event handler.
-
-        Args:
-            e (QDragEnterEvent): Event passed when mouse enters the window.
-        """
-        
-        # Check if user is dragging files
-        if not e.mimeData().hasUrls():
-            # No files in payload, ignore
-            e.ignore()
-        else:
-            # Payload had files, check if there are files with accepted formats
-            valid_files = [
-                f.toLocalFile() for f in e.mimeData().urls()
-                if any(f.toLocalFile().lower().endswith(ext) for ext in [".fid", ".ft2"])
-            ]
-            # Check if any valid files were found
-            if len(valid_files) != 0:
-                # There are valid files, accept the payload and turn on green overlay
-                e.accept()
-                self.overlay.setStyleSheet("""
-                    background-color: rgba(0, 255, 0, 10);
-                    font-weight: bold;
-                """)
-                file_list_text = ''.join(f + '\n' for f in valid_files)
-                self.overlay.setText(
-                    f"Import files:\n{file_list_text}"
-                )
-            else:
-                # There were no valid files, ignore payload and turn on red overlay
-                e.ignore()
-                self.overlay.setStyleSheet("""
-                    background-color: rgba(255, 0, 0, 10);
-                    font-weight: bold;
-                """)
-                self.overlay.setText(
-                    f"Invalid file format."
-                )
-            # Make sure overlay is on top
-            self.overlay.raise_()
-            # Show overlay
-            self.overlay.show()
-    
-    
-    def dragLeaveEvent(self, e: QDragLeaveEvent) -> None:
-        """Main window drag leave event handler.
-
-        Args:
-            e (QDragLeaveEvent): Event passed when mouse leaves the window.
-        """
-        # Hide overlay on mouse leave
-        self.overlay.hide()
-    
-    
-    def dropEvent(self, e: QDropEvent) -> None:
-        """Main window drag leave event handler.
-
-        Args:
-            e (QDropEvent): Event passed when dropping files onto the window.
-        """
-        # Hide overlay
-        self.overlay.hide()
-        
-        # Fish out files with accepted file formats from the payload
-        valid_files = [
-            f.toLocalFile() for f in e.mimeData().urls()
-            if any(f.toLocalFile().lower().endswith(ext) for ext in [".fid", ".ft2"])
-        ]
-        
-        # Send valid files to be imported
-        self.import_spectra(valid_files)
-        
-        
     def import_spectrum_button_callback(self) -> None:
         """Open a dialog for file browsing files.
         """

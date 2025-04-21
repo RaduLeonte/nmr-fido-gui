@@ -1,37 +1,66 @@
-#InnerFrame {
-    border: 2px solid black;
-    border-radius: 5px;
-}
+/* QWidget {
+    background-color: var(--bg-color1);
+    color: var(--text-color);
+} */
 
-#InnerFrame[selected="true"] {
-    border: 2px solid white;
-}
-
-
-#NodeBody {
-    background-color: #303030;
-}
-
-QSpinBox {
-    background-color: #1d1d1d;
-    color: white;
-}
-
-QDoubleSpinBox {
-    background-color: #1d1d1d;
-    color: white;
+QLabel {
+    background-color: none;
 }
 
 QLineEdit {
-    background-color: #1d1d1d;
-    color: white;
+    background-color: var(--bg-color1);
+    color: var(--text-color);
 }
+
+QSpinBox {
+    background-color: var(--bg-color1);
+    color: var(--text-color);
+}
+
+QDoubleSpinBox {
+    background-color: var(--bg-color1);
+    color: var(--text-color);
+}
+
+QComboBox {
+    background-color: var(--bg-color1);
+    color: var(--text-color)
+}
+
 
 #CustomCheckBox {
-    background-color: #656565;
-    color: white;
+    background-color: var(--bg-color1);
+    color: var(--text-color);
 }
-
 #CustomCheckBox[checked="true"] {
     background-color: #4772b3;
+}
+
+
+/* OVERLAY */
+#Overlay {
+    background-color: rgba(0, 0, 0, 100);
+    font-weight: bold;
+}
+
+#Overlay[status="valid"] {
+    background-color: rgba(0, 255, 0, 10);
+}
+
+#Overlay[status="invalid"] {
+    background-color: rgba(255, 0, 0, 10);
+}
+
+
+/* NODE EDITOR */
+#NodeInnerFrame {
+    border: 2px solid black;
+    border-radius: 5px;
+}
+#NodeInnerFrame[selected="true"] {
+    border: 2px solid var(--text-color);
+}
+
+#NodeBody {
+    background-color: var(--bg-color2);
 }
