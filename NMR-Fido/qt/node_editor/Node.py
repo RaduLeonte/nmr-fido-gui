@@ -427,6 +427,4 @@ class Port(QGraphicsEllipseItem):
                 if existing_wire in self.connected_wires:
                     self.connected_wires.remove(existing_wire)
                 
-        target_port.connected_wire = self
-        
         Wire(output_port=self, input_port=target_port)

@@ -16,8 +16,6 @@ class Graph:
         input_port.connected_port = output_port
 
         wire = Wire(output_port=output_port, input_port=input_port)
-        input_port.connected_wire = wire
-        output_port.connected_wires.append(wire)
         
         if hasattr(input_widget, "on_connection_changed"):
             input_widget.on_connection_changed()

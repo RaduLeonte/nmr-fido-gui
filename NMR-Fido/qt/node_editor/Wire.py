@@ -9,10 +9,10 @@ class Wire(QGraphicsPathItem):
 
         self.output_port = output_port
         self.input_port = input_port
+        
+        
         self.color_start = QColor(output_port.color)
         self.color_end = QColor(input_port.color)
-
-        self.setZValue(1)
 
         # Add wire to scene
         self.scene_ref = self.output_port.scene()
