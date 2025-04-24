@@ -12,10 +12,13 @@ from PySide6.QtWidgets import *
 from PySide6.QtGui import *
 import pyqtgraph as pg
 
-from src.session import Session
-from src.spectrum import Spectrum
-from src.processing_modules import ProcessingModules
-from src.qt_gui.nodes.NodeEditor import *
+from session import Session
+from spectrum import Spectrum
+from processing_modules import ProcessingModules
+
+from qt.node_editor.Graph import *
+from qt.node_editor.NodeEditor import *
+from qt.node_editor.nodes import *
 
 
 COLOR_PALETTE = {
@@ -277,10 +280,9 @@ class MainWindow(QMainWindow):
             return
         
         self.app.setStyle("fusion")
-        load_stylesheet(self.app, "src/styles.css", COLOR_PALETTE)
+        load_stylesheet(self.app, "styles.css", COLOR_PALETTE)
         
         
-        #region Window config
         self.setWindowTitle("NMR Fido")
         #self.setWindowIcon(QIcon("icon.png"))
         self.setAcceptDrops(True)
@@ -314,9 +316,9 @@ class MainWindow(QMainWindow):
         splitter.addWidget(self._create_plot())
         splitter.setSizes(
             [
-                0.1*app_size.width(),
-                0.5*app_size.width(),
-                0.4*app_size.width()
+                0.0*app_size.width(),
+                1.0*app_size.width(),
+                0.0*app_size.width()
             ]
         )
         
@@ -375,36 +377,31 @@ class MainWindow(QMainWindow):
         node_editor_container_layout = QVBoxLayout()
         node_editor_container.setLayout(node_editor_container_layout)
         
-        node_editor_scene = QGraphicsScene()
-        width = 10_000
-        height = 5_000
-        node_editor_scene.setSceneRect(-width/2, -height/2, width, height)
-        node_editor_view = NodeEditor(node_editor_scene, background_color=COLOR_PALETTE["--bg-color1"])
-        node_editor_container_layout.addWidget(node_editor_view)
+        self.graph = Graph()
+        
+        self.node_editor = NodeEditor(self.graph, size=(10_000, 5_000), background_color=COLOR_PALETTE["--bg-color1"])
+        node_editor_container_layout.addWidget(self.node_editor)
 
-        node_editor_scene.addItem(ImportDataNode(node_editor_scene, QPointF(-300, 0)))
-        node_editor_scene.addItem(TestNode(node_editor_scene))
-        node_editor_scene.addItem(PlotDataNode(node_editor_scene, QPointF(300, 0)))
+        # Testing nodes
+        self.node_editor.add(ImportDataNode(), QPointF(-300, 0))
+        self.node_editor.add(TestNode())
+        self.node_editor.add(PlotDataNode(), QPointF(300, 0))
         
-        value_node_1 = ValueIntNode(node_editor_scene, QPointF(-500, -300))
-        value_node_2 = ValueIntNode(node_editor_scene, QPointF(-500, -150))
-        add_node = AddNode(node_editor_scene, QPointF(-200, -300))
-        display_node = DisplayDataNode(node_editor_scene, QPointF(100, -300))
+        value_node_1 = ConstantIntNode()
+        value_node_2 = ConstantIntNode()
+        math_node = MathNode()
+        display_node = PrintDataNode()
+
         
-        graph.add_node(value_node_1)
-        graph.add_node(value_node_2)
-        graph.add_node(add_node)
-        graph.add_node(display_node)
+        self.node_editor.add(value_node_1, QPointF(-500, -300))
+        self.node_editor.add(value_node_2, QPointF(-500, -150))
+        self.node_editor.add(math_node, QPointF(-200, -300))
+        self.node_editor.add(display_node, QPointF(100, -300))
+        self.node_editor.add(EvaluateGraphNode(self.graph), QPointF(400, -300))
         
-        graph.connect(value_node_1.outputs["output"], add_node.inputs["input_1"])
-        graph.connect(value_node_2.outputs["output"], add_node.inputs["input_2"])
-        graph.connect(add_node.outputs["output"], display_node.inputs["input"])
-        
-        node_editor_scene.addItem(value_node_1)
-        node_editor_scene.addItem(value_node_2)
-        node_editor_scene.addItem(add_node)
-        node_editor_scene.addItem(display_node)
-        node_editor_scene.addItem(EvaluateGraphNode(node_editor_scene, QPointF(400, -300)))
+        self.graph.connect(value_node_1.outputs["output"], math_node.parameters["a"])
+        #self.graph.connect(value_node_2.outputs["output"], math_node.parameters["b"])
+        self.graph.connect(math_node.outputs["result"], display_node.parameters["input"])
         
         
         return node_editor_container

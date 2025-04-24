@@ -1,4 +1,4 @@
-from src.spectrum import Spectrum
+from spectrum import Spectrum
 
 
 class Session:
