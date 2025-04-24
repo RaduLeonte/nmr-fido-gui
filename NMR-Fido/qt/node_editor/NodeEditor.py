@@ -7,16 +7,20 @@ from PySide6.QtWidgets import *
 from PySide6.QtGui import *
 
 from qt.node_editor.Node import Node
+from qt.node_editor.Wire import Wire
+from qt.node_editor.Port import Port
 
 class NodeEditor(QGraphicsView):
-    def __init__(self, graph, size: tuple=(10_000, 5_000), background_color: str="#1d1d1d"):
-        self.graph = graph
+    def __init__(self, scene_size: tuple=(10_000, 5_000), background_color: str="#1d1d1d"):
+        self.nodes = []
+        self.connections = []
+        self.cache = {}
         
-        self.scene_ref = QGraphicsScene()
-        width, height = size
-        self.scene_ref.setSceneRect(-width/2, -height/2, width, height)
+        self.graphics_scene = QGraphicsScene()
+        width, height = scene_size
+        self.graphics_scene.setSceneRect(-width/2, -height/2, width, height)
+        super().__init__(self.graphics_scene)
         
-        super().__init__(self.scene_ref)
         self.setRenderHints(self.renderHints() | QPainter.RenderHint.Antialiasing | QPainter.SmoothPixmapTransform)
         self.setDragMode(QGraphicsView.RubberBandDrag)
         self.setBackgroundBrush(QColor(background_color))
@@ -27,6 +31,9 @@ class NodeEditor(QGraphicsView):
         
         self._is_panning = False
         self._pan_start = QPoint()
+        
+        self._dragged_port = None
+        self._temp_wire = None
         
         self._cutting = False
         self._cut_path = None
@@ -69,11 +76,6 @@ class NodeEditor(QGraphicsView):
 
         # 5. Move the scrollbars to keep the scene fixed under cursor
         self.translate(delta_scene.x(), delta_scene.y())
-    
-    
-    def reset_zoom(self):
-        self.resetTransform()
-        self._zoom = 0
     
 
     def mousePressEvent(self, event):
@@ -136,6 +138,11 @@ class NodeEditor(QGraphicsView):
             self._cut_path.setPath(path)
             event.accept()
             return
+        
+        if self._dragged_port:
+            self._update_temp_wire_path(self.mapToScene(event.position().toPoint()))
+            event.accept()
+            return
 
         self.setCursor(Qt.CursorShape.ArrowCursor)
 
@@ -170,17 +177,128 @@ class NodeEditor(QGraphicsView):
             event.accept()
             return
         
+        if self._dragged_port:
+            mouse_pos = self.mapToScene(event.position().toPoint())
+            items = self.scene().items(mouse_pos)
+            for item in items:
+                if isinstance(item, Port):
+                    source, dest = (self._dragged_port, item) if self._dragged_port.port_type == "output" else (item, self._dragged_port)
+                    if source.port_type == "output" and dest.port_type == "input":
+                        if dest.connected_wire:
+                            dest.connected_wire.remove()
+                        Wire(output_port=source, input_port=dest)
+                        break
+
+            if self._temp_wire:
+                self.scene().removeItem(self._temp_wire)
+                self._temp_wire = None
+            self._dragged_port = None
+
+            event.accept()
+            return
+        
         self.setCursor(Qt.CursorShape.ArrowCursor)
         self._pressed_item = None
         self._selected_item_offsets.clear()
         super().mouseReleaseEvent(event)
         return
     
+    #endregion Events
+    
+    
+    def begin_wire_drag(self, port, scene_pos):
+        if port.port_type == "input" and port.connected_wire:
+            # Reuse output port and delete old wire
+            output_port = port.connected_wire.output_port
+            port.connected_wire.remove()
+            port = output_port  # switch to dragging from output
+
+        self._dragged_port = port
+        self._temp_wire = QGraphicsPathItem()
+        self._temp_wire.setPen(QPen(QColor(port.color), 2))
+        self._temp_wire.setZValue(1)
+        self.scene().addItem(self._temp_wire)
+
+        self._update_temp_wire_path(scene_pos)
+
+
+    def _update_temp_wire_path(self, mouse_pos):
+        if not self._dragged_port or not self._temp_wire:
+            return
+
+        start = self._dragged_port.scenePos() + QPointF(self._dragged_port.radius, self._dragged_port.radius)
+        path = QPainterPath(start)
+        dx = abs(mouse_pos.x() - start.x()) * 0.5
+
+        if self._dragged_port.port_type == "output":
+            ctrl1 = QPointF(start.x() + dx, start.y())
+            ctrl2 = QPointF(mouse_pos.x() - dx, mouse_pos.y())
+        else:
+            ctrl1 = QPointF(start.x() - dx, start.y())
+            ctrl2 = QPointF(mouse_pos.x() + dx, mouse_pos.y())
+
+        path.cubicTo(ctrl1, ctrl2, mouse_pos)
+        self._temp_wire.setPath(path)
+    
+    
+    def reset_zoom(self) -> None:
+        self.resetTransform()
+        self._zoom = 0
+        return
+    
+    #region Node/Graph
+    def add(self, node: Node, pos: QPointF|QPoint|tuple=(0, 0)) -> None:
+        node.node_editor = self
+        
+        self.graphics_scene.addItem(node)
+        self.nodes.append(node)
+        
+        if isinstance(pos, tuple):
+            node.setPos(*pos)
+        else:
+            node.setPos(pos)
+        
+        return
+    
+    def remove(self, node: Node) -> None:
+        if node not in self.nodes:
+            return  # already removed
+    
+        # Disconnect all ports
+        self._disconnect_all_ports(node)
+        
+        # Remove node from scene
+        self.graphics_scene.removeItem(node)
+        
+        # Remove from internal list
+        self.nodes.remove(node)
+        
+        # Clean cache
+        if node in self.cache:
+            del self.cache[node]
+        
+        return
+    
+    
+    def connect(self, output_port: Port, input_port: Port) -> Wire:
+        return Wire(output_port, input_port)
+    
+    
+    def disconnect(self, target_port: Port) -> None:
+        target_port.connected_port = None
+        target_port.connected_wire.remove()
+        return
+    
+    
+    def _disconnect_all_ports(self, node: Node) -> None:
+        for port in node.inputs + node.outputs:
+            for wire in list(port.connected_wires):
+                wire.remove()
+        return
     
     def _disconnect_wires_along_path(self, path: QPainterPath):
         for item in self.scene().items():
             if isinstance(item, QGraphicsPathItem) and hasattr(item, "input_port") and hasattr(item, "output_port"):
-                # Test if wire intersects the cut path
                 if path.intersects(item.path()):
                     # Disconnect logic
                     wire = item
@@ -192,24 +310,26 @@ class NodeEditor(QGraphicsView):
 
                     # Clear connections
                     if input_port.connected_wire == wire:
-                        input_port.connected_wire = None
-                        
-                        widget = input_port.parentItem()
-                        if hasattr(widget, "on_connection_changed"):
-                            widget.on_connection_changed()
+                        input_port.connected_wire.remove()
 
                     if wire in output_port.connected_wires:
                         output_port.connected_wires.remove(wire)
     
     
-    def add(self, item: Node, pos: QPointF|QPoint|tuple=(0, 0)) -> None:
-        self.scene_ref.addItem(item)
-        self.graph.add_node(item)
+    def evaluate_node(self, node):
+        inputs = node.prepare_inputs()
         
-        if isinstance(pos, tuple):
-            item.setPos(*pos)
+        if node not in self.cache: self.cache[node] = {};
+        
+        if "inputs" in self.cache[node] and all(x == y for x, y in zip(self.cache[node]["inputs"].values(), inputs.values())):
+            return self.cache[node]["result"]
         else:
-            item.setPos(pos)
-        
-        return
+            self.cache[node]["inputs"] = inputs
+            
+            result = node.compute(inputs)
+            self.cache[node]["result"] = result
+            
+            return result
 
+
+    #endregion Node/Graph

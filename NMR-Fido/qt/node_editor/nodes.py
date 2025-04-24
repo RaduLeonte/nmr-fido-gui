@@ -2,22 +2,23 @@ from PySide6.QtCore import *
 from PySide6.QtWidgets import *
 from PySide6.QtGui import *
 
-from qt.node_editor.Node import *
+from qt.node_editor.Node import Node
+from qt.node_editor.NodeParameter import NodeParameter
 
 
 class EvaluateGraphNode(Node):
     title = "Evaluate graph"
     header_color = "#121212"
     
-    def __init__(self, graph_ref):
-        self.graph_ref = graph_ref
+    def __init__(self, eval_function, node_to_eval: Node):
+        self.eval_function = eval_function
+        self.node_to_eval = node_to_eval
         super().__init__()
     
     
     def _build_custom_body(self) -> None:
         button = QPushButton("Evaluate graph")
-        display_node = next((obj for obj in self.graph_ref.nodes if isinstance(obj, PrintDataNode)), None)
-        button.clicked.connect(lambda: self.graph_ref.evaluate(display_node))
+        button.clicked.connect(lambda: self.eval_function(self.node_to_eval))
         self.node_body_layout.addWidget(button)
     
     
@@ -47,19 +48,32 @@ class ImportDataNode(Node):
     header_color = "#121212"
 
     def __init__(self):
-        super().__init__(node_structure={
-            "outputs": [
-                {"id": "data", "label": "Data", "data_type": "array"},
-            ]
-        })
+        super().__init__()
 
     def _build_custom_body(self) -> None:
-        super()._build_custom_body()  # optional if you want to add default structure
         layout = QHBoxLayout()
         layout.setContentsMargins(5, 2, 5, 2)
         layout.setSpacing(5)
+        
+        output_port = NodeParameter(
+            param_type="output",
+            label="Data",
+            data_type="any",
+            input_port=False,
+            output_port=True,
+            proxy_ref=self,
+            parent_node=self,
+            port_id="output",
+        )
+        output_port.setObjectName("output")
+        output_port.parent_node = self
+        output_port.port_id = "output"
+        self.outputs["output"] = output_port
+        self.node_body_layout.addWidget(output_port)
 
         self.file_path_input = QLineEdit()
+        self.parameters["path"] = self.file_path_input
+        self.file_path_input.get_value = lambda: self.file_path_input.text()
         layout.addWidget(self.file_path_input)
 
         self.open_button = QPushButton("Open")
@@ -75,13 +89,7 @@ class ImportDataNode(Node):
 
     def compute(self, inputs):
         path = self.file_path_input.text()
-        try:
-            with open(path) as f:
-                data = f.read()
-            return {"data": data}
-        except Exception as e:
-            print("Failed to read file:", e)
-            return {"data": None}
+        return {"output": inputs["path"]}
     
 
 class TestNode(Node):
@@ -117,7 +125,7 @@ class PrintDataNode(Node):
 
     def _build_custom_body(self) -> None:
         # Create input port manually
-        input_widget = NodeParameterWidget(
+        input_widget = NodeParameter(
             param_type="any",
             label="Data",
             data_type="any",
@@ -149,6 +157,7 @@ class MathNode(Node):
         super().__init__(
             node_structure={
                 "parameters": [
+                    {"id": "mode", "label": None, "data_type": "dropdown", "items": ["Add", "Subtract", "Multiply", "Divide"]},
                     {"id": "a", "label": "A", "data_type": "float", "input": True},
                     {"id": "b", "label": "B", "data_type": "float", "input": True},
                 ],
@@ -160,18 +169,29 @@ class MathNode(Node):
 
     def compute(self, inputs):
         print("MathNode.compute() -> ", inputs)
-        return {"result": inputs["a"] + inputs["b"]}
+        match inputs["mode"]:
+            case "Add":
+                return {"result": inputs["a"] + inputs["b"]}
+            
+            case "Subtract":
+                return {"result": inputs["a"] - inputs["b"]}
+            
+            case "Multiply":
+                return {"result": inputs["a"] * inputs["b"]}
+            
+            case "Divide":
+                return {"result": inputs["a"] / inputs["b"]}
     
     
 
 class ConstantIntNode(Node):
-    title = "Constant integer"
+    title = "Integer"
     header_color = "#9c343e"
 
     def __init__(self):
         super().__init__(node_structure={
             "parameters": [
-                {"id": "value", "label": "Value", "data_type": "int"},
+                {"id": "value", "label": None, "data_type": "int"},
             ],
             "outputs": [
                 {"id": "output", "label": "Integer", "data_type": "int"},
@@ -180,4 +200,23 @@ class ConstantIntNode(Node):
 
     def compute(self, inputs):
         print("ConstantIntNode.compute() -> ", inputs)
+        return {"output": inputs["value"]}
+
+
+class ConstantFloatNode(Node):
+    title = "Float"
+    header_color = "#9c343e"
+
+    def __init__(self):
+        super().__init__(node_structure={
+            "parameters": [
+                {"id": "value", "label": None, "data_type": "float"},
+            ],
+            "outputs": [
+                {"id": "output", "label": "Float", "data_type": "float"},
+            ]
+        })
+
+    def compute(self, inputs):
+        print("ConstantFloatNode.compute() -> ", inputs)
         return {"output": inputs["value"]}

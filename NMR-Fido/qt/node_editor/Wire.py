@@ -7,9 +7,12 @@ class Wire(QGraphicsPathItem):
     def __init__(self, output_port, input_port, parent=None):
         super().__init__(parent)
 
+        input_port.connected_port = output_port
+
         self.output_port = output_port
         self.input_port = input_port
         
+        self.setZValue(-1)
         
         self.color_start = QColor(output_port.color)
         self.color_end = QColor(input_port.color)
@@ -50,17 +53,15 @@ class Wire(QGraphicsPathItem):
         gradient.setColorAt(0, self.color_start)
         gradient.setColorAt(1, self.color_end)
 
-        pen = QPen(QBrush(gradient), 2)
+        pen = QPen(QBrush(gradient), 4)
         self.setPen(pen)
-        
-        start_z = self.output_port.parentItem().zValue()
-        end_z = self.input_port.parentItem().zValue()
-
-        # Place the wire in between
-        self.setZValue((start_z + end_z) / 2)
 
     def remove(self):
         self.scene_ref.removeItem(self)
         if self in self.output_port.connected_wires:
             self.output_port.connected_wires.remove(self)
         self.input_port.connected_wire = None
+        
+        input_widget = self.input_port.parent_widget
+        if hasattr(input_widget, "on_connection_changed"):
+            input_widget.on_connection_changed()
