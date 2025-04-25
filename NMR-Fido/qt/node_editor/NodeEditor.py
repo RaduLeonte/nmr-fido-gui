@@ -47,6 +47,12 @@ class NodeEditor(QGraphicsView):
         self._zoom_step = 0.1
         self._zoom_range = (0.1, 2.0)  # min and max zoom scale
         
+        self._pending_node = None
+        
+        self._copied_nodes = []
+        
+        self._pre_rubberband_selection = set()
+        
         self._init_context_menu()
     
     
@@ -86,8 +92,11 @@ class NodeEditor(QGraphicsView):
     
     
     def _spawn_node(self, node_cls):
-        node = node_cls()  # You may need custom args handling here
-        self.add(node, self._context_menu_scene_pos)
+        node = node_cls()
+        node.node_editor = self
+        self._pending_node = node
+        self.graphics_scene.addItem(node)
+        self.setCursor(Qt.CursorShape.SizeAllCursor)
     
     
     #region Events
@@ -143,6 +152,11 @@ class NodeEditor(QGraphicsView):
             return
 
         self.setCursor(Qt.CursorShape.ArrowCursor)
+        if self.dragMode() == QGraphicsView.RubberBandDrag and event.button() == Qt.MouseButton.LeftButton:
+            if event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
+                self._pre_rubberband_selection = set(self.scene().selectedItems())
+            else:
+                self._pre_rubberband_selection.clear()
         self._pressed_item = self.itemAt(event.position().toPoint())
         
         if isinstance(self._pressed_item, Node):
@@ -164,10 +178,16 @@ class NodeEditor(QGraphicsView):
         super().mousePressEvent(event)
 
         if isinstance(self._pressed_item, Node):
-            if self._pressed_item in original_selection:
+            if event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
+                # Toggle selection for Shift+Click
+                if self._pressed_item in original_selection:
+                    self._pressed_item.setSelected(False)
+                else:
+                    self._pressed_item.setSelected(True)
                 for item in original_selection:
                     item.setSelected(True)
             else:
+                # Regular click selects only this node
                 self.scene().clearSelection()
                 self._pressed_item.setSelected(True)
         else:
@@ -204,6 +224,11 @@ class NodeEditor(QGraphicsView):
         if self._dragged_port:
             self._update_temp_wire_path(self.mapToScene(event.position().toPoint()))
             event.accept()
+            return
+        
+        if self._pending_node:
+            scene_pos = self.mapToScene(event.position().toPoint())
+            self._pending_node.setPos(scene_pos)
             return
 
         self.setCursor(Qt.CursorShape.ArrowCursor)
@@ -259,6 +284,33 @@ class NodeEditor(QGraphicsView):
             event.accept()
             return
         
+        if self._pending_node:
+            self.nodes.append(self._pending_node)
+            self._pending_node = None
+            self.setCursor(Qt.CursorShape.ArrowCursor)
+            return
+        
+        if self.dragMode() == QGraphicsView.RubberBandDrag and event.button() == Qt.MouseButton.LeftButton:
+            if self._pre_rubberband_selection:
+                # Use cached selection to toggle
+                view_rect = self.rubberBandRect()
+                scene_rect = self.mapToScene(view_rect).boundingRect()
+                items_in_band = [item for item in self.scene().items(scene_rect) if isinstance(item, Node)]
+
+                toggled_set = set()
+                for item in items_in_band:
+                    item.setSelected(item not in self._pre_rubberband_selection)
+                    toggled_set.add(item)
+
+                # Restore rest of original selection
+                for item in self._pre_rubberband_selection:
+                    if item not in toggled_set:
+                        item.setSelected(True)
+
+                self._pre_rubberband_selection.clear()
+                event.accept()
+                return
+        
         self.setCursor(Qt.CursorShape.ArrowCursor)
         self._pressed_item = None
         self._selected_item_offsets.clear()
@@ -282,6 +334,16 @@ class NodeEditor(QGraphicsView):
             event.accept()
             return
         
+        if (event.key() == Qt.Key.Key_C and event.modifiers() & Qt.KeyboardModifier.ControlModifier):
+            self._copied_nodes = [node for node in self.nodes if node.isSelected()]
+            event.accept()
+            return
+        
+        if (event.key() == Qt.Key.Key_V and event.modifiers() & Qt.KeyboardModifier.ControlModifier):
+            self._paste_nodes()
+            event.accept()
+            return
+        
         if (event.key() == Qt.Key.Key_A and
             event.modifiers() & Qt.KeyboardModifier.ShiftModifier):
             
@@ -297,6 +359,53 @@ class NodeEditor(QGraphicsView):
         # pass other keys to the default handler
         super().keyPressEvent(event)
     #endregion Events
+    
+    
+    
+    def _paste_nodes(self):
+        cursor_pos = QCursor.pos()
+        scene_center = self.mapToScene(self.mapFromGlobal(cursor_pos))
+        
+        bounding_rect = self._copied_nodes[0].sceneBoundingRect()
+        for node in self._copied_nodes[1:]:
+            bounding_rect = bounding_rect.united(node.sceneBoundingRect())
+        group_center = bounding_rect.center()
+        print(group_center)
+
+        new_nodes = []
+        for node in self._copied_nodes:
+            # Instantiate a new node of the same class
+            new_node = node.__class__()
+            new_node.node_editor = self
+
+            original_center = node.sceneBoundingRect().center()
+            original_top_left = node.sceneBoundingRect().topLeft()
+            offset_from_center_to_top_left = original_top_left - original_center
+            
+            new_pos = scene_center + (node.sceneBoundingRect().center() - group_center) + offset_from_center_to_top_left
+            new_node.setPos(new_pos)
+
+            # Copy parameter values if applicable
+            for param_id, param in node.parameters.items():
+                new_param = new_node.parameters.get(param_id)
+                if new_param and hasattr(param, "_value_widget") and hasattr(new_param, "_value_widget"):
+                    val = param.get_value()
+                    if hasattr(new_param._value_widget, "setValue"):
+                        new_param._value_widget.setValue(val)
+                    elif isinstance(new_param._value_widget, QLineEdit):
+                        new_param._value_widget.setText(val)
+                    elif isinstance(new_param._value_widget, QComboBox):
+                        new_param._value_widget.setCurrentText(val)
+                    elif isinstance(new_param._value_widget, QCheckBox):
+                        new_param._value_widget.setChecked(val)
+
+            self.graphics_scene.addItem(new_node)
+            self.nodes.append(new_node)
+            new_nodes.append(new_node)
+
+        # Optionally select pasted nodes
+        for node in new_nodes:
+            node.setSelected(True)
     
     
     def begin_wire_drag(self, port, scene_pos):
@@ -413,13 +522,16 @@ class NodeEditor(QGraphicsView):
         if node not in self.cache: self.cache[node] = {};
         
         def compare(x, y):
-            if type(x) != type(y):
+            try:
+                if type(x) != type(y):
+                    return False
+                
+                if isinstance(x, np.ndarray):
+                    return x.dtype == y.dtype and np.array_equal(x, y)
+                
+                return x == y
+            except:
                 return False
-            
-            if isinstance(x, np.ndarray):
-                return x.dtype == y.dtype and np.array_equal(x, y)
-            
-            return x == y
         
         if "inputs" in self.cache[node] and all(compare(x, y) for x, y in zip(self.cache[node]["inputs"].values(), inputs.values())):
             return self.cache[node]["result"]

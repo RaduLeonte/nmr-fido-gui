@@ -16,24 +16,15 @@ class EvaluateGraphNode(Node):
     header_color = "#121212"
     category = "Misc"
     
-    def __init__(self, eval_function, nodes_to_eval: Node | list[Node]):
+    def __init__(self, eval_function):
         self.eval_function = eval_function
-        self.nodes_to_eval = nodes_to_eval
         super().__init__()
     
     
     def _build_custom_body(self) -> None:
         button = QPushButton("Evaluate graph")
-        button.clicked.connect(self._on_evaluate_clicked)
+        button.clicked.connect(self.eval_function)
         self.node_body_layout.addWidget(button)
-    
-    
-    def _on_evaluate_clicked(self):
-        if isinstance(self.nodes_to_eval, (list, tuple)):
-            for node in self.nodes_to_eval:
-                self.eval_function(node)
-        else:
-            self.eval_function(self.nodes_to_eval)
     
     
     def compute(self, inputs):
