@@ -3,6 +3,7 @@ import os
 import numpy as np
 import importlib
 import inspect
+import time
 
 from PySide6.QtCore import *
 from PySide6.QtWidgets import *
@@ -51,9 +52,9 @@ class NodeEditor(QGraphicsView):
         
         self._copied_nodes = []
         
-        self._pre_rubberband_selection = set()
-        
         self._init_context_menu()
+        
+        self._is_ready = False
     
     
     def _load_nodes(self) -> dict:
@@ -100,6 +101,16 @@ class NodeEditor(QGraphicsView):
     
     
     #region Events
+    def showEvent(self, event):
+        super().showEvent(event)
+        if not self._is_ready:
+            QTimer.singleShot(0, self._mark_ready)
+    
+    def _mark_ready(self):
+        self._is_ready = True
+        self.trigger_evaluation()
+    
+    
     def wheelEvent(self, event):
         modifiers = event.modifiers()
         delta = event.angleDelta().y()
@@ -152,11 +163,6 @@ class NodeEditor(QGraphicsView):
             return
 
         self.setCursor(Qt.CursorShape.ArrowCursor)
-        if self.dragMode() == QGraphicsView.RubberBandDrag and event.button() == Qt.MouseButton.LeftButton:
-            if event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
-                self._pre_rubberband_selection = set(self.scene().selectedItems())
-            else:
-                self._pre_rubberband_selection.clear()
         self._pressed_item = self.itemAt(event.position().toPoint())
         
         if isinstance(self._pressed_item, Node):
@@ -178,18 +184,19 @@ class NodeEditor(QGraphicsView):
         super().mousePressEvent(event)
 
         if isinstance(self._pressed_item, Node):
-            if event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
-                # Toggle selection for Shift+Click
-                if self._pressed_item in original_selection:
-                    self._pressed_item.setSelected(False)
-                else:
-                    self._pressed_item.setSelected(True)
+            if self._pressed_item in original_selection:
                 for item in original_selection:
                     item.setSelected(True)
+                if event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
+                    self._pressed_item.setSelected(False)
             else:
-                # Regular click selects only this node
-                self.scene().clearSelection()
-                self._pressed_item.setSelected(True)
+                if event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
+                    self._pressed_item.setSelected(True)
+                    for item in original_selection:
+                        item.setSelected(True)
+                else:
+                    self.scene().clearSelection()
+                    self._pressed_item.setSelected(True)
         else:
             self.scene().clearSelection()
 
@@ -290,27 +297,6 @@ class NodeEditor(QGraphicsView):
             self.setCursor(Qt.CursorShape.ArrowCursor)
             return
         
-        if self.dragMode() == QGraphicsView.RubberBandDrag and event.button() == Qt.MouseButton.LeftButton:
-            if self._pre_rubberband_selection:
-                # Use cached selection to toggle
-                view_rect = self.rubberBandRect()
-                scene_rect = self.mapToScene(view_rect).boundingRect()
-                items_in_band = [item for item in self.scene().items(scene_rect) if isinstance(item, Node)]
-
-                toggled_set = set()
-                for item in items_in_band:
-                    item.setSelected(item not in self._pre_rubberband_selection)
-                    toggled_set.add(item)
-
-                # Restore rest of original selection
-                for item in self._pre_rubberband_selection:
-                    if item not in toggled_set:
-                        item.setSelected(True)
-
-                self._pre_rubberband_selection.clear()
-                event.accept()
-                return
-        
         self.setCursor(Qt.CursorShape.ArrowCursor)
         self._pressed_item = None
         self._selected_item_offsets.clear()
@@ -341,6 +327,11 @@ class NodeEditor(QGraphicsView):
         
         if (event.key() == Qt.Key.Key_V and event.modifiers() & Qt.KeyboardModifier.ControlModifier):
             self._paste_nodes()
+            event.accept()
+            return
+        
+        if (event.modifiers() & Qt.KeyboardModifier.ControlModifier and event.key() == Qt.Key.Key_R):
+            self.trigger_evaluation()
             event.accept()
             return
         
@@ -403,7 +394,7 @@ class NodeEditor(QGraphicsView):
             self.nodes.append(new_node)
             new_nodes.append(new_node)
 
-        # Optionally select pasted nodes
+        self.scene().clearSelection()
         for node in new_nodes:
             node.setSelected(True)
     
@@ -544,7 +535,17 @@ class NodeEditor(QGraphicsView):
             return result
 
 
+    def trigger_evaluation(self) -> None:
+        if not self._is_ready:
+            return
+        
+        self.evaluate_graph()
+        return
+
     def evaluate_graph(self):
+        start = time.time()
+        self._is_ready = False
+        
         visited = set()
         results = {}
 
@@ -576,6 +577,11 @@ class NodeEditor(QGraphicsView):
             if not has_outputs:
                 visit(node)
 
+        elapsed = time.time() - start
+        minutes, seconds = divmod(elapsed, 60)
+        milliseconds = (seconds - int(seconds)) * 1000
+        print(f"Graph evaluated in: {int(minutes)}m {int(seconds)}s {int(milliseconds):.0f}ms")
+        self._is_ready = True
         return results
 
     #endregion Node/Graph

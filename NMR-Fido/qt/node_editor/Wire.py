@@ -37,6 +37,10 @@ class Wire(QGraphicsPathItem):
         
         
         self.update_path()
+        
+        editor = input_port.parent_widget.proxy.node_editor
+        if editor:
+            editor.trigger_evaluation()
 
 
     def update_path(self):
@@ -76,3 +80,7 @@ class Wire(QGraphicsPathItem):
         input_widget = self.input_port.parent_widget
         if hasattr(input_widget, "on_connection_changed"):
             input_widget.on_connection_changed()
+            
+        editor = self.input_port.parent_widget.proxy.node_editor
+        if editor:
+            editor.trigger_evaluation()

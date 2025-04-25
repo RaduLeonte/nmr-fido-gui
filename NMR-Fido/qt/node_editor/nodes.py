@@ -11,30 +11,11 @@ from qt.node_editor.Node import Node
 from qt.node_editor.NodeParameter import NodeParameter
 
 
-class EvaluateGraphNode(Node):
-    title = "Evaluate graph"
-    header_color = "#121212"
-    category = "Misc"
-    
-    def __init__(self, eval_function):
-        self.eval_function = eval_function
-        super().__init__()
-    
-    
-    def _build_custom_body(self) -> None:
-        button = QPushButton("Evaluate graph")
-        button.clicked.connect(self.eval_function)
-        self.node_body_layout.addWidget(button)
-    
-    
-    def compute(self, inputs):
-        return {}
-
 
 class PlotDataNode(Node):
     title = "Plot data"
     header_color = "#121212"
-    category = "Misc"
+    category = "Utilities"
 
     def __init__(self):
         super().__init__()
@@ -77,10 +58,16 @@ class PlotDataNode(Node):
 
     def compute(self, inputs):
         data_inputs = inputs["data"]
-        print("PlotDataNode got data:", data_inputs)
+        #print("PlotDataNode got data:", data_inputs)
         self.plot_ax.clear()
-        for data in data_inputs:
-            self.plot_ax.plot(data, pen='c')
+        
+        color_cycle = ['c', 'm', 'y', 'r', 'g', 'b', 'w']
+        for i, data in enumerate(data_inputs):
+            if data is None:
+                continue
+            
+            color = color_cycle[i % len(color_cycle)]
+            self.plot_ax.plot(np.real(data), pen=color)
         return {}
     
 
@@ -118,6 +105,7 @@ class ImportDataNode(Node):
         self.file_path_input.setText(self.default_path)
         self.parameters["path"] = self.file_path_input
         self.file_path_input.get_value = lambda: self.file_path_input.text()
+        self.file_path_input.textChanged.connect(self._on_widget_changed)
         layout.addWidget(self.file_path_input)
 
         self.open_button = QPushButton("Open")
@@ -157,7 +145,7 @@ class TestNode(Node):
         })
 
     def compute(self, inputs):
-        print("TestNode inputs:", inputs)
+        #print("TestNode inputs:", inputs)
         return {"output": float(inputs.get("input_float", 0))}
     
     
@@ -165,7 +153,7 @@ class TestNode(Node):
 class PrintDataNode(Node):
     title = "Display data"
     header_color = "#9c343e"
-    category = "Misc"
+    category = "Utilities"
     
     def __init__(self):
         super().__init__()  # no node_structure passed
@@ -207,7 +195,7 @@ class PrintDataNode(Node):
 class MathNode(Node):
     title = "Math"
     header_color = "#246283"
-    category = "Misc"
+    category = "Math"
 
     def __init__(self):
         super().__init__(
@@ -224,7 +212,7 @@ class MathNode(Node):
         )
 
     def compute(self, inputs):
-        print("MathNode.compute() -> ", inputs)
+        #print("MathNode.compute() -> ", inputs)
         match inputs["mode"]:
             case "Add":
                 return {"result": inputs["a"] + inputs["b"]}
@@ -258,7 +246,7 @@ class ConstantIntNode(Node):
         })
 
     def compute(self, inputs):
-        print("ConstantIntNode.compute() -> ", inputs)
+        #print("ConstantIntNode.compute() -> ", inputs)
         return {"output": inputs["value"]}
 
 
@@ -278,7 +266,7 @@ class ConstantFloatNode(Node):
         })
 
     def compute(self, inputs):
-        print("ConstantFloatNode.compute() -> ", inputs)
+        #print("ConstantFloatNode.compute() -> ", inputs)
         return {"output": inputs["value"]}
 #endregion Constants value nodes
 
@@ -294,7 +282,7 @@ class SineWindowNode(Node):
         super().__init__(
             node_structure={
                 "parameters": [
-                    {"id": "offset", "label": "Offset", "data_type": "float", "default_value": 0.0, "input": True},
+                    {"id": "offset", "label": "Offset", "data_type": "float", "default_value": 0.5, "input": True},
                     {"id": "end", "label": "End", "data_type": "float", "default_value": 1.0, "input": True},
                     {"id": "power", "label": "Power", "data_type": "int", "default_value": 1, "clamp": [0, 10], "input": True},
                     {"id": "c", "label": "Scale of first point", "data_type": "float", "default_value": 1.0, "input": True},
@@ -319,24 +307,119 @@ class SineWindowNode(Node):
         Returns:
             dict: Output data
         """
-        print("ApodizationNode.compute() -> ", inputs)
         
         data, off, end, power, c = (inputs[k] for k in ("data", "offset", "end", "power", "c"))
         
+        size = data.shape[-1]
+        
         window = np.power(
-            data,
+            np.sin(np.pi*off + np.pi*(end - off)*np.arange(size) / (size - 1)).astype(data.dtype),
             power
+        ).astype(data.dtype)
+        
+        result = data * window
+        
+        return {"result": result, "window": window}
+    
+
+class ZeroFillingNode(Node):
+    title = "Zero filling"
+    header_color = "#246283"
+    category = "Processing"
+
+    def __init__(self):
+        super().__init__(
+            node_structure={
+                "parameters": [
+                    {"id": "double_count", "label": "Double count", "data_type": "int", "default_value": 1, "clamp": [0, 100], "input": True},
+                    {"id": "pad", "label": "Pad", "data_type": "int", "default_value": 0, "clamp": [0, np.inf], "input": True},
+                    {"id": "final_size", "label": "Final size", "data_type": "int", "default_value": 0, "clamp": [0, np.inf], "input": True},
+                    
+                    {"id": "data", "label": "Data", "data_type": "array", "input": True},
+                ],
+                "outputs": [
+                    {"id": "result", "label": "Data", "data_type": "array"},
+                ]
+            }
+        )
+
+    def compute(self, inputs: dict):
+        data, double_count, pad, final_size = (inputs[k] for k in ("data", "double_count", "pad", "final_size"))
+        
+        current_size = data.shape[-1]
+        pad_config = [(0, 0)] * data.ndim
+        zeroes_to_add = 0
+        
+        if double_count != 0:
+            zeroes_to_add = current_size*(2**double_count) - current_size
+        elif pad != 0:
+            zeroes_to_add = pad
+        elif final_size != 0:
+            zeroes_to_add = final_size - current_size
+            
+        if zeroes_to_add > 0:
+            pad_config[-1] = (0, zeroes_to_add)
+
+            if np.iscomplexobj(data):
+                pad_value = 0 + 0j
+            else:
+                pad_value = 0
+
+            result = np.pad(data, pad_config, mode='constant', constant_values=pad_value)
+        else:
+            result = data  # no padding
+
+        return {"result": result}
+    
+
+class FourierTransformNode(Node):
+    title = "Fourier transform"
+    header_color = "#246283"
+    category = "Processing"
+
+    def __init__(self):
+        super().__init__(
+            node_structure={
+                "parameters": [
+                    {"id": "inverse", "label": "Inverse", "data_type": "checkbox", "default_value": False, "input": True},
+                    {"id": "sign_alternation", "label": "Use sign alternation", "data_type": "checkbox", "default_value": False, "input": True},
+                    {"id": "negate_imaginaries", "label": "Negate imaginaries", "data_type": "checkbox", "default_value": False, "input": True},
+                    
+                    {"id": "data", "label": "Data", "data_type": "array", "input": True},
+                ],
+                "outputs": [
+                    {"id": "result", "label": "Data", "data_type": "array"},
+                ]
+            }
+        )
+
+    def compute(self, inputs: dict):
+        data, inverse, sign_alternation, negate_imaginaries = (
+            inputs[k] for k in ("data", "inverse", "sign_alternation", "negate_imaginaries")
         )
         
         result = data
         
-        return {"result": result, "window": window}
-    
-    
+        if inverse:
+            result = np.fft.ifft(result, axis=-1)
+        else:
+            result = np.fft.fftshift(np.fft.fft(result, axis=-1).astype(data.dtype), -1)
+            
+        if sign_alternation:
+            n = result.shape[-1]
+            alternator = np.power(-1, np.arange(n))
+            result = result * alternator
+            
+        if negate_imaginaries and np.iscomplexobj(result):
+            result = result.real - 1j * result.imag
+        
+        return {"result": result}
+
+
 class ExtractFIDNode(Node):
     title = "Extract FID"
     header_color = "#246283"
-    category = "Misc"
+    category = "Utilities"
 
     def __init__(self):
         super().__init__(
@@ -354,7 +437,7 @@ class ExtractFIDNode(Node):
         )
 
     def compute(self, inputs: dict):
-        print("ExtractFID.compute() -> ", inputs)
+        #print("ExtractFID.compute() -> ", inputs)
         
         data, index, indices = (inputs[k] for k in ("data", "index", "indices"))
 
@@ -371,7 +454,7 @@ class ExtractFIDNode(Node):
 class DeleteImaginariesNode(Node):
     title = "Delete imaginaries"
     header_color = "#246283"
-    category = "Misc"
+    category = "Processing"
 
     def __init__(self):
         super().__init__(

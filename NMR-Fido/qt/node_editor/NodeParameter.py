@@ -65,11 +65,13 @@ class NodeParameter(QWidget):
             if default_value is not None:
                 self._value_widget.setCurrentText(default_value)
             layout.addWidget(self._value_widget)
+            self._value_widget.currentIndexChanged.connect(self._on_widget_changed)
 
         elif param_type == "checkbox":
             self._value_widget = QCheckBox()
             if default_value is not None:
                 self._value_widget.setChecked(default_value)
+            self._value_widget.stateChanged.connect(self._on_widget_changed)
             layout.addWidget(self._value_widget)
 
         # Port on right if output
@@ -88,6 +90,7 @@ class NodeParameter(QWidget):
             if default_value is not None:
                 box.setValue(default_value)
             box.lineEdit().setAlignment(Qt.AlignmentFlag.AlignCenter)
+            box.valueChanged.connect(self._on_widget_changed)
             return box
         elif t == "float":
             box = QDoubleSpinBox()
@@ -99,11 +102,13 @@ class NodeParameter(QWidget):
                 box.setValue(default_value)
             box.setSingleStep(0.1)
             box.lineEdit().setAlignment(Qt.AlignmentFlag.AlignCenter)
+            box.valueChanged.connect(self._on_widget_changed)
             return box
         elif t == "str":
             line_edit = QLineEdit()
             if default_value is not None:
                 line_edit.setText(default_value)
+            line_edit.textChanged.connect(self._on_widget_changed)
             return line_edit
 
     def _ensure_port(self, port_type):
@@ -164,3 +169,8 @@ class NodeParameter(QWidget):
             )
             if self._value_widget:
                 self._value_widget.setVisible(not is_connected)
+    
+    
+    def _on_widget_changed(self, *args):
+        if self.parent_node and self.parent_node.node_editor:
+            self.parent_node.node_editor.trigger_evaluation()

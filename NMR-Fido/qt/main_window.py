@@ -417,7 +417,6 @@ class MainWindow(QMainWindow):
         self.node_editor.connect(delete_imaginaries_node.outputs["output"].port, plot_data_node.parameters["data"].port)
         
         
-        self.node_editor.add(EvaluateGraphNode(self.node_editor.evaluate_graph), QPointF(500, -200))
         
         return node_editor_container
     

@@ -130,6 +130,10 @@ class Node(QGraphicsProxyWidget):
         return
 
 
+    def _on_widget_changed(self, *args):
+        if self.parent_node and self.parent_node.node_editor:
+            self.parent_node.node_editor.trigger_evaluation()
+
     def _build_body_from_structure(self) -> None:
         """Use the specified node structure to create the node body"""
         if "outputs" in self.node_structure:
@@ -207,13 +211,14 @@ class Node(QGraphicsProxyWidget):
                 value = widget.get_value() if hasattr(widget, "get_value") else None
 
             inputs[param_id] = value
-        print(f"[{self.title}] Preparing inputs:", inputs)
+        #print(f"[{self.title}] Preparing inputs:", inputs)
         return inputs
         
 
     def compute(self, inputs: dict) -> dict:
         """Process inputs and return a dictionary of outputs."""
         raise NotImplementedError("Each node must implement compute().")
+    
     
     
 
