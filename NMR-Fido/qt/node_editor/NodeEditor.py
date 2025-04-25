@@ -90,6 +90,13 @@ class NodeEditor(QGraphicsView):
         reset_zoom_action.triggered.connect(self.reset_zoom)
         self.context_menu.addAction(reset_zoom_action)
         
+        
+        debug_menu = self.context_menu.addMenu("Debug")
+        
+        print_node_pos = QAction("Print node positions", self)
+        print_node_pos.triggered.connect(self._print_node_positions)
+        debug_menu.addAction(print_node_pos)
+        
         self._context_menu_scene_pos = QPointF()
         return
     
@@ -115,6 +122,9 @@ class NodeEditor(QGraphicsView):
     
     #region Zoom
     def wheelEvent(self, event):
+        if self._forward_event_to_plotwidget(event):
+            return
+        
         modifiers = event.modifiers()
         delta = event.angleDelta().y()
 
@@ -144,6 +154,9 @@ class NodeEditor(QGraphicsView):
 
     #region Mouse press
     def mousePressEvent(self, event):
+        if self._forward_event_to_plotwidget(event):
+            return
+        
         if event.button() == Qt.MouseButton.MiddleButton:
             self._is_panning = True
             self.setCursor(Qt.CursorShape.SizeAllCursor)
@@ -162,10 +175,10 @@ class NodeEditor(QGraphicsView):
             return
 
         self.setCursor(Qt.CursorShape.ArrowCursor)
-        self._pressed_item = self.itemAt(event.position().toPoint())
+        pressed_item = self.itemAt(event.position().toPoint())
         
-        if isinstance(self._pressed_item, Node):
-            proxy = self._pressed_item  # QGraphicsProxyWidget
+        if isinstance(pressed_item, Node):
+            proxy = pressed_item  # QGraphicsProxyWidget
             widget = proxy.widget()
             if widget is not None:
                 scene_pos = self.mapToScene(event.position().toPoint())
@@ -174,6 +187,7 @@ class NodeEditor(QGraphicsView):
 
                 while child is not None:
                     if isinstance(child, (QLineEdit, QTextEdit, QSpinBox, QDoubleSpinBox, pg.PlotWidget)):
+                        event.setAccepted(False)
                         super().mousePressEvent(event)
                         return
                     child = child.parentWidget()
@@ -182,6 +196,7 @@ class NodeEditor(QGraphicsView):
         original_selection = set(self.scene().selectedItems())
         super().mousePressEvent(event)
 
+        self._pressed_item = self.itemAt(event.position().toPoint())
         if isinstance(self._pressed_item, Node):
             if self._pressed_item in original_selection:
                 for item in original_selection:
@@ -207,6 +222,9 @@ class NodeEditor(QGraphicsView):
 
     #region Mouse move
     def mouseMoveEvent(self, event):
+        if self._forward_event_to_plotwidget(event):
+            return
+        
         if self._is_panning:
             delta = event.position().toPoint() - self._pan_start
             self._pan_start = event.position().toPoint()
@@ -236,6 +254,24 @@ class NodeEditor(QGraphicsView):
             scene_pos = self.mapToScene(event.position().toPoint())
             self._pending_node.setPos(scene_pos)
             return
+        
+        
+        hovered_item = self.itemAt(event.position().toPoint())
+        
+        if isinstance(hovered_item, Node):
+            proxy = hovered_item  # QGraphicsProxyWidget
+            widget = proxy.widget()
+            if widget is not None:
+                scene_pos = self.mapToScene(event.position().toPoint())
+                widget_pos = proxy.mapFromScene(scene_pos)
+                child = widget.childAt(widget_pos.x(), widget_pos.y())
+
+                while child is not None:
+                    if isinstance(child, pg.PlotWidget):
+                        event.setAccepted(False)
+                        super().mouseMoveEvent(event)
+                        return
+                    child = child.parentWidget()
 
         self.setCursor(Qt.CursorShape.ArrowCursor)
 
@@ -253,6 +289,9 @@ class NodeEditor(QGraphicsView):
   
     #region Mouse release
     def mouseReleaseEvent(self, event) -> None:
+        if self._forward_event_to_plotwidget(event):
+            return
+        
         if event.button() == Qt.MouseButton.MiddleButton and self._is_panning:
             self._is_panning = False
             self.setCursor(Qt.CursorShape.ArrowCursor)
@@ -346,6 +385,53 @@ class NodeEditor(QGraphicsView):
 
         # pass other keys to the default handler
         super().keyPressEvent(event)
+    
+    
+    def _forward_event_to_plotwidget(self, event):
+        hovered_item = self.itemAt(event.position().toPoint())
+        if isinstance(hovered_item, Node):
+            proxy = hovered_item
+            widget = proxy.widget()
+            if widget is not None:
+                scene_pos = self.mapToScene(event.position().toPoint())
+                widget_pos = proxy.mapFromScene(scene_pos)
+                child = widget.childAt(widget_pos.x(), widget_pos.y())
+
+                while child is not None:
+                    if isinstance(child, pg.PlotWidget):
+                        view = child.viewport()
+
+                        if isinstance(event, QMouseEvent):
+                            forwarded_event = QMouseEvent(
+                                event.type(),
+                                widget_pos,
+                                event.globalPosition().toPoint(),
+                                event.button(),
+                                event.buttons(),
+                                event.modifiers(),
+                            )
+                            QApplication.sendEvent(view, forwarded_event)
+                            return True
+
+                        elif isinstance(event, QWheelEvent):
+                            forwarded_event = QWheelEvent(
+                                widget_pos,
+                                event.globalPosition(),
+                                event.pixelDelta(),
+                                event.angleDelta(),
+                                event.buttons(),
+                                event.modifiers(),
+                                event.phase(),
+                                event.inverted(),
+                                event.source()
+                            )
+                            QApplication.sendEvent(view, forwarded_event)
+                            return True
+
+                    child = child.parentWidget()
+        return False
+
+    
     
     
     #region Paste nodes
@@ -592,29 +678,67 @@ class NodeEditor(QGraphicsView):
     
     
     #region Debugging
-    def spawn_debugging_nodes(self) -> None:
-        import_data_node = ImportDataNode(default_path="test.fid")
-        self.add(import_data_node, QPointF(-900, 200))
+    def _spawn_debugging_nodes(self) -> None:
+        import_node = ImportDataNode(default_path="test.fid")
+        self.add(import_node, QPointF(-1100, 0))
         
-        sine_window_node = SineWindowNode()
-        self.add(sine_window_node, QPointF(-600, 0))
+        sine = SineWindowNode()
+        self.add(sine, QPointF(-800, 0))
         
-        extract_fid_node = ExtractFIDNode()
-        self.add(extract_fid_node, QPointF(-300, 100))
+        plot1 = PlotDataNode()
+        self.add(plot1, QPointF(-200, 500))
         
-        delete_imaginaries_node = DeleteImaginariesNode()
-        self.add(delete_imaginaries_node, QPointF(0, 0))
+        zf = ZeroFillingNode()
+        self.add(zf, QPointF(-200, 0))
         
-        display_node2 = PrintDataNode()
-        self.add(display_node2, QPointF(0, 100))
+        ft = FourierTransformNode()
+        self.add(ft, QPointF(200, 0))
         
-        plot_data_node = PlotDataNode()
-        self.add(plot_data_node, QPointF(300, 0))
+        extfid1 = ExtractFIDNode()
+        self.add(extfid1, QPointF(-500, 300))
         
-        self.connect(import_data_node.outputs["output"].port, sine_window_node.parameters["data"].port)
-        self.connect(sine_window_node.outputs["result"].port, extract_fid_node.parameters["data"].port)
-        self.connect(extract_fid_node.outputs["output"].port, display_node2.parameters["input"].port)
-        self.connect(extract_fid_node.outputs["output"].port, delete_imaginaries_node.parameters["data"].port)
-        self.connect(delete_imaginaries_node.outputs["output"].port, plot_data_node.parameters["data"].port)
+        math = MathNode(default_values=[None, 350], default_mode="Multiply")
+        self.add(math, QPointF(-500, 500))
         
+        extfid2 = ExtractFIDNode()
+        self.add(extfid2, QPointF(-500, 700))
+        
+        extfid3 = ExtractFIDNode()
+        self.add(extfid3, QPointF(500, 300))
+        
+        plot2 = PlotDataNode()
+        self.add(plot2, QPointF(800, 500))
+        
+        
+        phase = PhaseNode()
+        self.add(phase, QPointF(800, 0))
+        
+        
+        self.connect(import_node.outputs["data"].port, sine.parameters["data"].port)
+        self.connect(import_node.outputs["data"].port, extfid2.parameters["data"].port)
+        
+        self.connect(sine.outputs["result"].port, zf.parameters["data"].port)
+        self.connect(sine.outputs["result"].port, extfid1.parameters["data"].port)
+        self.connect(sine.outputs["window"].port, math.parameters["a"].port)
+        
+        
+        self.connect(list(extfid2.outputs.values())[0].port, plot1.parameters["data"].port)
+        self.connect(list(extfid1.outputs.values())[0].port, plot1.parameters["data"].port)
+        self.connect(list(math.outputs.values())[0].port, plot1.parameters["data"].port)
+        
+        
+        self.connect(zf.outputs["result"].port, ft.parameters["data"].port)
+        
+        self.connect(list(ft.outputs.values())[0].port, extfid3.parameters["data"].port)
+        self.connect(list(extfid3.outputs.values())[0].port, plot2.parameters["data"].port)
+        
+        
+        self.connect(list(ft.outputs.values())[0].port, phase.parameters["data"].port)
+        
+        return
+    
+    
+    def _print_node_positions(self) -> None:
+        for node in self.nodes:
+            print(f"{node.title}: Position = {node.pos()}")
         return

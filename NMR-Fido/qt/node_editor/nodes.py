@@ -25,7 +25,7 @@ class PlotDataNode(Node):
         layout.setContentsMargins(5, 2, 5, 2)
         layout.setSpacing(5)
         
-        input_port = NodeParameter(
+        data_input_port = NodeParameter(
             param_type="any",
             label="Data",
             data_type="any",
@@ -36,30 +36,43 @@ class PlotDataNode(Node):
             port_id="data",
             accept_multiple_wires=True,
         )
-        input_port.setObjectName("data")
-        input_port.parent_node = self
-        input_port.port_id = "data"
-        self.parameters["data"] = input_port
-        self.node_body_layout.addWidget(input_port)
+        data_input_port.setObjectName("data")
+        data_input_port.parent_node = self
+        data_input_port.port_id = "data"
+        self.parameters["data"] = data_input_port
+        self.node_body_layout.addWidget(data_input_port)
+        
+        scale_input_port = NodeParameter(
+            param_type="array",
+            label="Scale",
+            data_type="array",
+            input_port=True,
+            output_port=False,
+            proxy_ref=self,
+            parent_node=self,
+            port_id="scale",
+            accept_multiple_wires=False,
+        )
+        scale_input_port.setObjectName("scale")
+        scale_input_port.parent_node = self
+        scale_input_port.port_id = "scale"
+        self.parameters["scale"] = scale_input_port
+        self.node_body_layout.addWidget(scale_input_port)
 
         self.plot = pg.PlotWidget()
-        plot_layout = pg.GraphicsLayout()
-        self.plot.setCentralItem(plot_layout)
         layout.addWidget(self.plot)
         
-        self.plot_ax = pg.PlotItem()
-        self.plot_ax.getAxis("bottom").setTextPen("w")
-        self.plot_ax.getAxis("left").setTextPen("w")
-        self.plot_ax.getViewBox().setBackgroundColor("#1e1e1e")
-        self.plot.setBackground(QColor(0, 0, 0, 0))
-        plot_layout.addItem(self.plot_ax)
+        self.plot.setBackground(QColor("#1e1e1e"))
+        self.plot.getAxis("bottom").setTextPen("w")
+        self.plot.getAxis("left").setTextPen("w")
 
         self.node_body_layout.addLayout(layout)
 
     def compute(self, inputs):
         data_inputs = inputs["data"]
+        scale = inputs["scale"]
         #print("PlotDataNode got data:", data_inputs)
-        self.plot_ax.clear()
+        self.plot.clear()
         
         color_cycle = ['c', 'm', 'y', 'r', 'g', 'b', 'w']
         for i, data in enumerate(data_inputs):
@@ -67,7 +80,15 @@ class PlotDataNode(Node):
                 continue
             
             color = color_cycle[i % len(color_cycle)]
-            self.plot_ax.plot(np.real(data), pen=color)
+            
+            if scale is None:
+                scale = np.arange(data.shape[0])
+                
+            if scale[0] > scale[-1]:
+                self.plot.getViewBox().invertX(True)
+                
+            self.plot.plot(scale, np.real(data), pen=color)
+
         return {}
     
 
@@ -85,7 +106,7 @@ class ImportDataNode(Node):
         layout.setContentsMargins(5, 2, 5, 2)
         layout.setSpacing(5)
         
-        output_port = NodeParameter(
+        output_port1 = NodeParameter(
             param_type="output",
             label="Data",
             data_type="array",
@@ -93,13 +114,29 @@ class ImportDataNode(Node):
             output_port=True,
             proxy_ref=self,
             parent_node=self,
-            port_id="output",
+            port_id="data",
         )
-        output_port.setObjectName("output")
-        output_port.parent_node = self
-        output_port.port_id = "output"
-        self.outputs["output"] = output_port
-        self.node_body_layout.addWidget(output_port)
+        output_port1.setObjectName("data")
+        output_port1.parent_node = self
+        output_port1.port_id = "data"
+        self.outputs["data"] = output_port1
+        self.node_body_layout.addWidget(output_port1)
+        
+        output_port2 = NodeParameter(
+            param_type="output",
+            label="Dic",
+            data_type="any",
+            input_port=False,
+            output_port=True,
+            proxy_ref=self,
+            parent_node=self,
+            port_id="dic",
+        )
+        output_port2.setObjectName("dic")
+        output_port2.parent_node = self
+        output_port2.port_id = "dic"
+        self.outputs["dic"] = output_port2
+        self.node_body_layout.addWidget(output_port2)
 
         self.file_path_input = QLineEdit()
         self.file_path_input.setText(self.default_path)
@@ -123,7 +160,8 @@ class ImportDataNode(Node):
         path = inputs["path"]
         
         dic, data = ng.pipe.read(path)
-        return {"output": data}
+        #udic = ng.pipe.guess_udic(dic, data)
+        return {"data": data, "dic": dic}
     
 
 class TestNode(Node):
@@ -197,13 +235,13 @@ class MathNode(Node):
     header_color = "#246283"
     category = "Math"
 
-    def __init__(self):
+    def __init__(self, default_values=[None, None], default_mode=None):
         super().__init__(
             node_structure={
                 "parameters": [
-                    {"id": "mode", "label": None, "data_type": "dropdown", "items": ["Add", "Subtract", "Multiply", "Divide"]},
-                    {"id": "a", "label": "A", "data_type": "float", "input": True},
-                    {"id": "b", "label": "B", "data_type": "float", "input": True},
+                    {"id": "mode", "label": None, "data_type": "dropdown", "default_value": default_mode, "items": ["Add", "Subtract", "Multiply", "Divide"]},
+                    {"id": "a", "label": "A", "data_type": "float", "default_value": default_values[0], "input": True},
+                    {"id": "b", "label": "B", "data_type": "float", "default_value": default_values[1], "input": True},
                 ],
                 "outputs": [
                     {"id": "result", "label": "Result", "data_type": "float"},
@@ -225,6 +263,34 @@ class MathNode(Node):
             
             case "Divide":
                 return {"result": inputs["a"] / inputs["b"]}
+            
+class MinMaxNode(Node):
+    title = "Get min/max"
+    header_color = "#246283"
+    category = "Math"
+
+    def __init__(self, default_values=[None, None], default_mode=None):
+        super().__init__(
+            node_structure={
+                "parameters": [
+                    {"id": "mode", "label": None, "data_type": "dropdown", "default_value": default_mode, "items": ["Min", "Max"]},
+                    
+                    {"id": "data", "label": "Data", "data_type": "array", "input": True},
+                ],
+                "outputs": [
+                    {"id": "result", "label": "Result", "data_type": "float"},
+                ]
+            }
+        )
+
+    def compute(self, inputs):
+        data, mode = (inputs[k] for k in ("data", "mode"))
+        
+        
+        if mode == "Min":
+            return {"result": min(data)}
+        else:
+            return {"result": max(data)}
     
 """
 Constant value nodes
@@ -319,6 +385,8 @@ class SineWindowNode(Node):
         
         result = data * window
         
+        result[..., 0] = result[..., 0] * c
+        
         return {"result": result, "window": window}
     
 
@@ -371,6 +439,45 @@ class ZeroFillingNode(Node):
 
         return {"result": result}
     
+    
+class PhaseNode(Node):
+    title = "Phase"
+    header_color = "#246283"
+    category = "Processing"
+
+    def __init__(self):
+        super().__init__(
+            node_structure={
+                "parameters": [
+                    {"id": "p1", "label": "P1", "data_type": "float", "default_value": 0.0, "input": True},
+                    {"id": "p2", "label": "P2", "data_type": "float", "default_value": 0.0, "input": True},
+                    {"id": "pivot", "label": "Pivot", "data_type": "int", "default_value": 0, "clamp": [0, np.inf], "input": True},
+                    
+                    {"id": "data", "label": "Data", "data_type": "array", "input": True},
+                ],
+                "outputs": [
+                    {"id": "result", "label": "Data", "data_type": "array"},
+                ]
+            }
+        )
+
+    def compute(self, inputs: dict):
+        data, p1, p2, pivot = (inputs[k] for k in ("data", "p1", "p2", "pivot"))
+        
+        if data is None or not isinstance(data, (list, np.ndarray)):
+            return {"result": None}
+        
+        
+        size = data.shape[-1]
+        x = np.arange(size) - pivot
+        phase = np.deg2rad(p1 + p2*(x/size))
+        phase_correction = np.exp(1j * phase)
+        
+        result = data * phase_correction
+        
+        return {"result": result}
+
+
 
 class FourierTransformNode(Node):
     title = "Fourier transform"
@@ -440,15 +547,23 @@ class ExtractFIDNode(Node):
         #print("ExtractFID.compute() -> ", inputs)
         
         data, index, indices = (inputs[k] for k in ("data", "index", "indices"))
+        
+        if data is None:
+            return {"output": None}
 
-        if indices == "":
-            return {"output": data[index]}
-        else:
-            cleaned_indices = indices.replace(" ", "")
-            cleaned_indices = re.sub(r'[\[\]]+', ',', cleaned_indices)
-            index_list = [int(i) for i in cleaned_indices.split(',') if i.strip().isdigit()]
-            
-            return {"output": data[tuple(index_list)]}
+        try:
+            if indices == "" and index is not None and type(index) is int:
+                size = data.shape[0]
+                print(size, size - 1)
+                return {"output": data[min(max(index, 0), size - 1)]}
+            else:
+                cleaned_indices = indices.replace(" ", "")
+                cleaned_indices = re.sub(r'[\[\]]+', ',', cleaned_indices)
+                index_list = [int(i) for i in cleaned_indices.split(',') if i.strip().isdigit()]
+                
+                return {"output": data[tuple(index_list)]}
+        except IndexError:
+            return {"output": data}
         
         
 class DeleteImaginariesNode(Node):
@@ -475,3 +590,107 @@ class DeleteImaginariesNode(Node):
             return {"output": np.real(data)}
 
         return {"output": data}
+
+
+class GetPPMScale(Node):
+    title = "Get PPM scale"
+    header_color = "#246283"
+    category = "Utilities"
+
+    def __init__(self):
+        super().__init__(
+            node_structure={
+                "parameters": [
+                    {"id": "dim", "label": "Dimension", "data_type": "int", "clamp": [0, np.inf], "input": True},
+                    
+                    {"id": "data", "label": "Data", "data_type": "array", "input": True},
+                    {"id": "dic", "label": "Dic", "data_type": "any", "input": True},
+                ],
+                "outputs": [
+                    {"id": "output", "label": "Data", "data_type": "array"},
+                ]
+            }
+        )
+
+    def compute(self, inputs: dict):
+        dim = inputs["dim"]
+        data = inputs["data"]      
+        dic = inputs["dic"]
+        
+        if dim is None or data is None or dic is None:
+            return {"output": None}
+        
+        udic = ng.pipe.make_uc(dic, data, dim=dim)
+        scale_limits = udic.ppm_limits()
+        scale = np.linspace(scale_limits[0], scale_limits[1], data.shape[dim])
+        
+        print("scale", len(scale))
+
+        return {"output": scale}
+    
+
+class CropDataPointsNode(Node):
+    title = "Crop data (points)"
+    header_color = "#246283"
+    category = "Utilities"
+
+    def __init__(self):
+        super().__init__(
+            node_structure={
+                "parameters": [
+                    {"id": "start_index", "label": "Start index", "data_type": "int", "default_value": 0, "clamp": [0, np.inf], "input": True},
+                    {"id": "end_index", "label": "End index", "data_type": "int", "default_value": 0, "clamp": [0, np.inf], "input": True},
+                    
+                    {"id": "data", "label": "Data", "data_type": "array", "input": True},
+                ],
+                "outputs": [
+                    {"id": "output", "label": "Data", "data_type": "array"},
+                ]
+            }
+        )
+
+    def compute(self, inputs: dict):      
+        data, start_index, end_index = (inputs[k] for k in ("data", "start_index", "end_index"))
+        
+        if data is None:
+            return {"output": None}
+        
+        if start_index >= end_index:
+            return {"output": data}
+        else:
+            return {"output": data[start_index: end_index]}
+        
+        
+class CropDataFractionNode(Node):
+    title = "Crop data (fraction)"
+    header_color = "#246283"
+    category = "Utilities"
+
+    def __init__(self):
+        super().__init__(
+            node_structure={
+                "parameters": [
+                    {"id": "start_fraction", "label": "Start fraction", "data_type": "float", "default_value": 0.0, "clamp": [0,1.0], "input": True},
+                    {"id": "end_fraction", "label": "End fraction", "data_type": "float", "default_value": 1.0, "clamp": [0, 1.0], "input": True},
+                    
+                    {"id": "data", "label": "Data", "data_type": "array", "input": True},
+                ],
+                "outputs": [
+                    {"id": "output", "label": "Data", "data_type": "array"},
+                ]
+            }
+        )
+
+    def compute(self, inputs: dict):      
+        data, start_fraction, end_fraction = (inputs[k] for k in ("data", "start_fraction", "end_fraction"))
+        
+        if data is None:
+            return {"output": None}
+        
+        if start_fraction >= end_fraction:
+            return {"output": data}
+        else:
+            size = data.shape[-1]
+            start_index = int(size*start_fraction)
+            end_index = int(size*end_fraction)
+            return {"output": data[start_index: end_index]}
