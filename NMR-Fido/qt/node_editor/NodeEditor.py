@@ -57,6 +57,7 @@ class NodeEditor(QGraphicsView):
         self._is_ready = False
     
     
+    #region Load nodes
     def _load_nodes(self) -> dict:
         module = importlib.import_module("qt.node_editor.nodes")
         node_classes = {}
@@ -71,6 +72,7 @@ class NodeEditor(QGraphicsView):
         return node_classes
     
     
+    #region Context menu
     def _init_context_menu(self) -> None:
         self.context_menu = QMenu(self)
 
@@ -91,13 +93,13 @@ class NodeEditor(QGraphicsView):
         self._context_menu_scene_pos = QPointF()
         return
     
-    
-    def _spawn_node(self, node_cls):
-        node = node_cls()
-        node.node_editor = self
-        self._pending_node = node
-        self.graphics_scene.addItem(node)
-        self.setCursor(Qt.CursorShape.SizeAllCursor)
+    def contextMenuEvent(self, event: QContextMenuEvent) -> None:
+        item = self.itemAt(event.pos())
+
+        if item is None and not (event.modifiers() & Qt.KeyboardModifier.ControlModifier):
+            self._context_menu_scene_pos = self.mapToScene(event.pos())
+            self.context_menu.popup(event.globalPos())
+        return
     
     
     #region Events
@@ -111,6 +113,7 @@ class NodeEditor(QGraphicsView):
         self.trigger_evaluation()
     
     
+    #region Zoom
     def wheelEvent(self, event):
         modifiers = event.modifiers()
         delta = event.angleDelta().y()
@@ -123,10 +126,8 @@ class NodeEditor(QGraphicsView):
             self.verticalScrollBar().setValue(self.verticalScrollBar().value() - delta)
             return
 
-        # 1. Get position before zoom (in scene coords)
         old_pos = self.mapToScene(event.position().toPoint())
 
-        # 2. Zoom
         factor = 1.0 + self._zoom_step if delta > 0 else 1.0 - self._zoom_step
         new_scale = self.transform().m11() * factor
 
@@ -134,16 +135,14 @@ class NodeEditor(QGraphicsView):
             self.scale(factor, factor)
             self._zoom += (1 if delta > 0 else -1)
 
-        # 3. Get position after zoom (new scene coords under mouse)
         new_pos = self.mapToScene(event.position().toPoint())
 
-        # 4. Calculate how much the scene moved under the cursor
         delta_scene = new_pos - old_pos
 
-        # 5. Move the scrollbars to keep the scene fixed under cursor
         self.translate(delta_scene.x(), delta_scene.y())
     
 
+    #region Mouse press
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.MiddleButton:
             self._is_panning = True
@@ -206,7 +205,7 @@ class NodeEditor(QGraphicsView):
             if isinstance(item, Node):
                 self._selected_item_offsets[item] = item.pos() - scene_pos
 
-
+    #region Mouse move
     def mouseMoveEvent(self, event):
         if self._is_panning:
             delta = event.position().toPoint() - self._pan_start
@@ -252,6 +251,7 @@ class NodeEditor(QGraphicsView):
             super().mouseMoveEvent(event)
             
   
+    #region Mouse release
     def mouseReleaseEvent(self, event) -> None:
         if event.button() == Qt.MouseButton.MiddleButton and self._is_panning:
             self._is_panning = False
@@ -302,16 +302,9 @@ class NodeEditor(QGraphicsView):
         self._selected_item_offsets.clear()
         super().mouseReleaseEvent(event)
         return
-    
-    
-    def contextMenuEvent(self, event: QContextMenuEvent) -> None:
-        item = self.itemAt(event.pos())
 
-        if item is None and not (event.modifiers() & Qt.KeyboardModifier.ControlModifier):
-            self._context_menu_scene_pos = self.mapToScene(event.pos())
-            self.context_menu.popup(event.globalPos())
-        return
-    
+
+    #region Key press
     def keyPressEvent(self, event: QKeyEvent):
         if event.key() == Qt.Key.Key_Delete:
             for item in self.scene().selectedItems():
@@ -349,10 +342,9 @@ class NodeEditor(QGraphicsView):
 
         # pass other keys to the default handler
         super().keyPressEvent(event)
-    #endregion Events
     
     
-    
+    #region Paste nodes
     def _paste_nodes(self):
         cursor_pos = QCursor.pos()
         scene_center = self.mapToScene(self.mapFromGlobal(cursor_pos))
@@ -453,6 +445,15 @@ class NodeEditor(QGraphicsView):
         
         return
     
+    def _spawn_node(self, node_cls) -> None:
+        node = node_cls()
+        node.node_editor = self
+        self._pending_node = node
+        self.graphics_scene.addItem(node)
+        self.setCursor(Qt.CursorShape.SizeAllCursor)
+        return
+    
+    
     def remove(self, node: Node) -> None:
         if node not in self.nodes:
             return  # already removed
@@ -507,6 +508,7 @@ class NodeEditor(QGraphicsView):
                     item.remove()
     
     
+    #region Evaluate graph
     def evaluate_node(self, node):
         inputs = node.prepare_inputs()
         
@@ -534,13 +536,13 @@ class NodeEditor(QGraphicsView):
             
             return result
 
-
     def trigger_evaluation(self) -> None:
         if not self._is_ready:
             return
         
         self.evaluate_graph()
         return
+
 
     def evaluate_graph(self):
         start = time.time()
@@ -585,6 +587,7 @@ class NodeEditor(QGraphicsView):
         return results
     
     
+    #region Debugging
     def spawn_debugging_nodes(self) -> None:
         import_data_node = ImportDataNode(default_path="test.fid")
         self.add(import_data_node, QPointF(-900, 200))
@@ -611,5 +614,3 @@ class NodeEditor(QGraphicsView):
         self.connect(delete_imaginaries_node.outputs["output"].port, plot_data_node.parameters["data"].port)
         
         return
-
-    #endregion Node/Graph
