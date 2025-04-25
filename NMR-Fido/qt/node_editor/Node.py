@@ -33,9 +33,13 @@ class Node(QGraphicsProxyWidget):
         if change == QGraphicsItem.GraphicsItemChange.ItemPositionHasChanged:
             for port in self.parameters.values():
                 if hasattr(port, "port") and port.port and port.port.port_type == "input":
-                    wire = getattr(port.port, "connected_wire", None)
-                    if wire:
-                        wire.update_path()
+                    if port.port.accept_multiple_wires:
+                        for wire in port.port.connected_wires:
+                            wire.update_path()
+                    else:
+                        wire = getattr(port.port, "connected_wire", None)
+                        if wire:
+                            wire.update_path()
 
             for port in self.outputs.values():
                 if hasattr(port, "port") and port.port:
@@ -160,6 +164,8 @@ class Node(QGraphicsProxyWidget):
                     param_type=param_type,
                     label=label,
                     data_type=param_type,
+                    default_value=param.get("default_value", None),
+                    clamp=param.get("clamp", None),
                     input_port=param.get("input", False),
                     output_port=False,
                     items=param.get("items", []),
@@ -185,15 +191,19 @@ class Node(QGraphicsProxyWidget):
         inputs = {}
         for param_id, widget in self.parameters.items():
             port = getattr(widget, "port", None)
-            connected_port = getattr(port, "connected_port", None)
 
-            if port and port.port_type == "input" and connected_port:
-                # Connected: get value from upstream
-                source_node = connected_port.parent_node
-                upstream_result = self.node_editor.evaluate_node(source_node)  
-                value = upstream_result.get(connected_port.port_id)
+            if port is not None and port.accept_multiple_wires and hasattr(port, "connected_wires"):
+                values = []
+                for wire in port.connected_wires:
+                    source_node = wire.output_port.parent_node
+                    upstream_result = self.node_editor.evaluate_node(source_node)
+                    values.append(upstream_result.get(wire.output_port.port_id))
+                value = values
+            elif port is not None and port.connected_wire:
+                source_node = port.connected_wire.output_port.parent_node
+                upstream_result = self.node_editor.evaluate_node(source_node)
+                value = upstream_result.get(port.connected_wire.output_port.port_id)
             else:
-                # Not connected or no port: get local value
                 value = widget.get_value() if hasattr(widget, "get_value") else None
 
             inputs[param_id] = value

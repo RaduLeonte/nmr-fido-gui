@@ -374,9 +374,7 @@ class MainWindow(QMainWindow):
         node_editor_container_layout.addWidget(self.node_editor)
 
         # Testing nodes
-        self.node_editor.add(ImportDataNode(), QPointF(-300, 0))
-        self.node_editor.add(TestNode())
-        self.node_editor.add(PlotDataNode(), QPointF(300, 0))
+        self.node_editor.add(TestNode(), QPointF(-900, -200))
         
         value_node_1 = ConstantIntNode()
         value_node_2 = ConstantFloatNode()
@@ -388,12 +386,38 @@ class MainWindow(QMainWindow):
         self.node_editor.add(value_node_2, QPointF(-500, -150))
         self.node_editor.add(math_node, QPointF(-200, -300))
         self.node_editor.add(display_node, QPointF(100, -300))
-        self.node_editor.add(EvaluateGraphNode(self.node_editor.evaluate_node, display_node), QPointF(400, -300))
         
         self.node_editor.connect(value_node_1.outputs["output"].port, math_node.parameters["a"].port)
         #self.graph.connect(value_node_2.outputs["output"], math_node.parameters["b"])
         self.node_editor.connect(math_node.outputs["result"].port, display_node.parameters["input"].port)
         
+        
+        import_data_node = ImportDataNode(default_path="test.fid")
+        self.node_editor.add(import_data_node, QPointF(-900, 200))
+        
+        sine_window_node = SineWindowNode()
+        self.node_editor.add(sine_window_node, QPointF(-600, 0))
+        
+        extract_fid_node = ExtractFIDNode()
+        self.node_editor.add(extract_fid_node, QPointF(-300, 100))
+        
+        delete_imaginaries_node = DeleteImaginariesNode()
+        self.node_editor.add(delete_imaginaries_node, QPointF(0, 0))
+        
+        display_node2 = PrintDataNode()
+        self.node_editor.add(display_node2, QPointF(0, 100))
+        
+        plot_data_node = PlotDataNode()
+        self.node_editor.add(plot_data_node, QPointF(300, 0))
+        
+        self.node_editor.connect(import_data_node.outputs["output"].port, sine_window_node.parameters["data"].port)
+        self.node_editor.connect(sine_window_node.outputs["result"].port, extract_fid_node.parameters["data"].port)
+        self.node_editor.connect(extract_fid_node.outputs["output"].port, display_node2.parameters["input"].port)
+        self.node_editor.connect(extract_fid_node.outputs["output"].port, delete_imaginaries_node.parameters["data"].port)
+        self.node_editor.connect(delete_imaginaries_node.outputs["output"].port, plot_data_node.parameters["data"].port)
+        
+        
+        self.node_editor.add(EvaluateGraphNode(self.node_editor.evaluate_node, [display_node2, plot_data_node]), QPointF(500, -200))
         
         return node_editor_container
     

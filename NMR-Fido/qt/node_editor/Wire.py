@@ -7,8 +7,6 @@ class Wire(QGraphicsPathItem):
     def __init__(self, output_port, input_port, parent=None):
         super().__init__(parent)
 
-        input_port.connected_port = output_port
-
         self.output_port = output_port
         self.input_port = input_port
         
@@ -20,10 +18,17 @@ class Wire(QGraphicsPathItem):
         # Add wire to scene
         self.scene_ref = self.output_port.scene()
         self.scene_ref.addItem(self)
-
-        # Register wire with ports
+        
         self.output_port.connected_wires.append(self)
-        self.input_port.connected_wire = self
+        
+        if input_port.accept_multiple_wires:
+            if not hasattr(input_port, "connected_wires"):
+                input_port.connected_wires = []
+            input_port.connected_wires.append(self)
+        else:
+            if input_port.connected_wire:
+                input_port.connected_wire.remove()
+            input_port.connected_wire = self
 
         
         input_widget = self.input_port.parent_widget
@@ -57,10 +62,16 @@ class Wire(QGraphicsPathItem):
         self.setPen(pen)
 
     def remove(self):
-        self.scene_ref.removeItem(self)
+        if self.input_port.connected_wire == self:
+            self.input_port.connected_wire = None
+            
+        if self in self.input_port.connected_wires:
+            self.input_port.connected_wires.remove(self)
+        
         if self in self.output_port.connected_wires:
             self.output_port.connected_wires.remove(self)
-        self.input_port.connected_wire = None
+        
+        self.scene_ref.removeItem(self)
         
         input_widget = self.input_port.parent_widget
         if hasattr(input_widget, "on_connection_changed"):

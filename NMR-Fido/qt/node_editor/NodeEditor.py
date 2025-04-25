@@ -1,12 +1,16 @@
 import sys
 import os
 import numpy as np
+import importlib
+import inspect
 
 from PySide6.QtCore import *
 from PySide6.QtWidgets import *
 from PySide6.QtGui import *
+import pyqtgraph as pg
 
 from qt.node_editor.Node import Node
+from qt.node_editor.nodes import *
 from qt.node_editor.Wire import Wire
 from qt.node_editor.Port import Port
 
@@ -43,6 +47,48 @@ class NodeEditor(QGraphicsView):
         self._zoom_step = 0.1
         self._zoom_range = (0.1, 2.0)  # min and max zoom scale
         
+        self._init_context_menu()
+    
+    
+    def _load_nodes(self) -> dict:
+        module = importlib.import_module("qt.node_editor.nodes")
+        node_classes = {}
+
+        for name, obj in inspect.getmembers(module, inspect.isclass):
+            if issubclass(obj, Node) and obj is not Node:
+                category = getattr(obj, "category", "Uncategorized")
+                if category not in node_classes:
+                    node_classes[category] = []
+                node_classes[category].append(obj)
+
+        return node_classes
+    
+    
+    def _init_context_menu(self) -> None:
+        self.context_menu = QMenu(self)
+
+        # Add actions to the menu
+        self.add_node_menu = self.context_menu.addMenu("Add Node")
+        self.node_class_map = self._load_nodes()
+        for category, class_list in self.node_class_map.items():
+            category_menu = self.add_node_menu.addMenu(category)
+            for cls in class_list:
+                action = QAction(cls.title, self)
+                action.triggered.connect(lambda checked=False, cls=cls: self._spawn_node(cls))
+                category_menu.addAction(action)
+
+        reset_zoom_action = QAction("Reset Zoom", self)
+        reset_zoom_action.triggered.connect(self.reset_zoom)
+        self.context_menu.addAction(reset_zoom_action)
+        
+        self._context_menu_scene_pos = QPointF()
+        return
+    
+    
+    def _spawn_node(self, node_cls):
+        node = node_cls()  # You may need custom args handling here
+        self.add(node, self._context_menu_scene_pos)
+    
     
     #region Events
     def wheelEvent(self, event):
@@ -98,6 +144,22 @@ class NodeEditor(QGraphicsView):
 
         self.setCursor(Qt.CursorShape.ArrowCursor)
         self._pressed_item = self.itemAt(event.position().toPoint())
+        
+        if isinstance(self._pressed_item, Node):
+            proxy = self._pressed_item  # QGraphicsProxyWidget
+            widget = proxy.widget()
+            if widget is not None:
+                scene_pos = self.mapToScene(event.position().toPoint())
+                widget_pos = proxy.mapFromScene(scene_pos)
+                child = widget.childAt(widget_pos.x(), widget_pos.y())
+
+                while child is not None:
+                    if isinstance(child, (QLineEdit, QTextEdit, QSpinBox, QDoubleSpinBox, pg.PlotWidget)):
+                        super().mousePressEvent(event)
+                        return
+                    child = child.parentWidget()
+        
+        
         original_selection = set(self.scene().selectedItems())
         super().mousePressEvent(event)
 
@@ -184,7 +246,7 @@ class NodeEditor(QGraphicsView):
                 if isinstance(item, Port):
                     source, dest = (self._dragged_port, item) if self._dragged_port.port_type == "output" else (item, self._dragged_port)
                     if source.port_type == "output" and dest.port_type == "input":
-                        if dest.connected_wire:
+                        if not dest.accept_multiple_wires and dest.connected_wire:
                             dest.connected_wire.remove()
                         Wire(output_port=source, input_port=dest)
                         break
@@ -203,6 +265,37 @@ class NodeEditor(QGraphicsView):
         super().mouseReleaseEvent(event)
         return
     
+    
+    def contextMenuEvent(self, event: QContextMenuEvent) -> None:
+        item = self.itemAt(event.pos())
+
+        if item is None and not (event.modifiers() & Qt.KeyboardModifier.ControlModifier):
+            self._context_menu_scene_pos = self.mapToScene(event.pos())
+            self.context_menu.popup(event.globalPos())
+        return
+    
+    def keyPressEvent(self, event: QKeyEvent):
+        if event.key() == Qt.Key.Key_Delete:
+            for item in self.scene().selectedItems():
+                if isinstance(item, Node):
+                    self.remove(item)
+            event.accept()
+            return
+        
+        if (event.key() == Qt.Key.Key_A and
+            event.modifiers() & Qt.KeyboardModifier.ShiftModifier):
+            
+            # Store mouse position in scene coords
+            cursor_pos = QCursor.pos()
+            self._context_menu_scene_pos = self.mapToScene(self.mapFromGlobal(cursor_pos))
+            
+            # Open just the "Add Node" submenu
+            self.add_node_menu.popup(cursor_pos)
+            event.accept()
+            return
+
+        # pass other keys to the default handler
+        super().keyPressEvent(event)
     #endregion Events
     
     
@@ -215,7 +308,7 @@ class NodeEditor(QGraphicsView):
 
         self._dragged_port = port
         self._temp_wire = QGraphicsPathItem()
-        self._temp_wire.setPen(QPen(QColor(port.color), 2))
+        self._temp_wire.setPen(QPen(QColor(port.color), 4))
         self._temp_wire.setZValue(1)
         self.scene().addItem(self._temp_wire)
 
@@ -265,7 +358,23 @@ class NodeEditor(QGraphicsView):
             return  # already removed
     
         # Disconnect all ports
-        self._disconnect_all_ports(node)
+        for param in node.parameters.values():
+            port = getattr(param, "port", None)
+            if port:
+                if port.accept_multiple_wires:
+                    for wire in list(port.connected_wires):
+                        wire.remove()
+                    port.connected_wires.clear()
+                elif port.connected_wire:
+                    port.connected_wire.remove()
+                    port.connected_wire = None
+                    
+        for param in node.outputs.values():
+            port = getattr(param, "port", None)
+            if port:
+                for wire in list(port.connected_wires):
+                    wire.remove()
+                port.connected_wires.clear()
         
         # Remove node from scene
         self.graphics_scene.removeItem(node)
@@ -290,30 +399,12 @@ class NodeEditor(QGraphicsView):
         return
     
     
-    def _disconnect_all_ports(self, node: Node) -> None:
-        for port in node.inputs + node.outputs:
-            for wire in list(port.connected_wires):
-                wire.remove()
-        return
-    
     def _disconnect_wires_along_path(self, path: QPainterPath):
         for item in self.scene().items():
             if isinstance(item, QGraphicsPathItem) and hasattr(item, "input_port") and hasattr(item, "output_port"):
                 if path.intersects(item.path()):
                     # Disconnect logic
-                    wire = item
-                    input_port = wire.input_port
-                    output_port = wire.output_port
-
-                    # Remove from scene
-                    self.scene().removeItem(wire)
-
-                    # Clear connections
-                    if input_port.connected_wire == wire:
-                        input_port.connected_wire.remove()
-
-                    if wire in output_port.connected_wires:
-                        output_port.connected_wires.remove(wire)
+                    item.remove()
     
     
     def evaluate_node(self, node):
@@ -321,7 +412,16 @@ class NodeEditor(QGraphicsView):
         
         if node not in self.cache: self.cache[node] = {};
         
-        if "inputs" in self.cache[node] and all(x == y for x, y in zip(self.cache[node]["inputs"].values(), inputs.values())):
+        def compare(x, y):
+            if type(x) != type(y):
+                return False
+            
+            if isinstance(x, np.ndarray):
+                return x.dtype == y.dtype and np.array_equal(x, y)
+            
+            return x == y
+        
+        if "inputs" in self.cache[node] and all(compare(x, y) for x, y in zip(self.cache[node]["inputs"].values(), inputs.values())):
             return self.cache[node]["result"]
         else:
             self.cache[node]["inputs"] = inputs
@@ -331,5 +431,39 @@ class NodeEditor(QGraphicsView):
             
             return result
 
+
+    def evaluate_graph(self):
+        visited = set()
+        results = {}
+
+        def visit(node):
+            if node in visited:
+                return
+
+            # Visit upstream dependencies first
+            for param in node.parameters.values():
+                port = getattr(param, "port", None)
+                if not port or port.port_type != "input":
+                    continue
+
+                wires = port.connected_wires if port.accept_multiple_wires else [port.connected_wire] if port.connected_wire else []
+                for wire in wires:
+                    upstream_node = wire.output_port.parent_node
+                    visit(upstream_node)
+
+            # Then evaluate the node itself
+            results[node] = self.evaluate_node(node)
+            visited.add(node)
+
+        # Start from all leaf nodes (no output wires)
+        for node in self.nodes:
+            has_outputs = any(
+                port.connected_wires for param in node.outputs.values()
+                if (port := getattr(param, "port", None))
+            )
+            if not has_outputs:
+                visit(node)
+
+        return results
 
     #endregion Node/Graph

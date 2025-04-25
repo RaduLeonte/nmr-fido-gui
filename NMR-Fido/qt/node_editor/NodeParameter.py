@@ -1,3 +1,5 @@
+import numpy as np
+
 from PySide6.QtCore import *
 from PySide6.QtWidgets import *
 from PySide6.QtGui import *
@@ -12,8 +14,11 @@ class NodeParameter(QWidget):
         param_type: str,  # "int", "float", "str", "dropdown", "checkbox", "output"
         label: str,
         data_type: str = None,
+        default_value=None,
+        clamp=None,
         input_port: bool = False,
         output_port: bool = False,
+        accept_multiple_wires: bool = False,
         items: list = None,
         proxy_ref: QGraphicsProxyWidget = None,
         parent_node=None,
@@ -29,6 +34,7 @@ class NodeParameter(QWidget):
         self.proxy = proxy_ref
         self.input_port_enabled = input_port
         self.output_port_enabled = output_port
+        self.accept_multiple_wires = accept_multiple_wires
         self.port = None
         self._value_widget = None
         
@@ -50,16 +56,20 @@ class NodeParameter(QWidget):
 
         # Input widget (if needed)
         if param_type in ("int", "float", "str"):
-            self._value_widget = self._build_numeric(param_type)
+            self._value_widget = self._build_numeric(param_type, default_value, clamp)
             layout.addWidget(self._value_widget)
 
         elif param_type == "dropdown" and items:
             self._value_widget = QComboBox()
             self._value_widget.addItems(items)
+            if default_value is not None:
+                self._value_widget.setCurrentText(default_value)
             layout.addWidget(self._value_widget)
 
         elif param_type == "checkbox":
             self._value_widget = QCheckBox()
+            if default_value is not None:
+                self._value_widget.setChecked(default_value)
             layout.addWidget(self._value_widget)
 
         # Port on right if output
@@ -68,28 +78,44 @@ class NodeParameter(QWidget):
 
         self.setLayout(layout)
 
-    def _build_numeric(self, t):
+    def _build_numeric(self, t, default_value, clamp):
         if t == "int":
             box = QSpinBox()
-            box.setRange(-9999, 9999)
+            clamp = clamp if clamp is not None else (-2_000_000_000 , 2_000_000_000 )
+            clamp = tuple(2_000_000_000  if x == np.inf else -2_000_000_000  if x == -np.inf else x for x in clamp)
+            box.setRange(*clamp)
             box.setValue(0)
+            if default_value is not None:
+                box.setValue(default_value)
             box.lineEdit().setAlignment(Qt.AlignmentFlag.AlignCenter)
             return box
         elif t == "float":
             box = QDoubleSpinBox()
-            box.setRange(-9999.0, 9999.0)
+            clamp = clamp if clamp is not None else (-1e10, 1e10)
+            clamp = tuple(1e10 if x == np.inf else -1e10 if x == -np.inf else x for x in clamp)
+            box.setRange(*clamp)
             box.setValue(0.0)
+            if default_value is not None:
+                box.setValue(default_value)
             box.setSingleStep(0.1)
             box.lineEdit().setAlignment(Qt.AlignmentFlag.AlignCenter)
             return box
         elif t == "str":
-            return QLineEdit()
+            line_edit = QLineEdit()
+            if default_value is not None:
+                line_edit.setText(default_value)
+            return line_edit
 
     def _ensure_port(self, port_type):
         if self.port is not None:
             return
 
-        self.port = Port(port_type, self.data_type, parent_widget=self)
+        self.port = Port(
+            port_type,
+            self.data_type,
+            parent_widget=self,
+            accept_multiple_wires=self.accept_multiple_wires,
+        )
         self.port.setParentItem(self.proxy)
         self.port.parent_node = self.parent_node
         self.port.port_id = self.port_id
@@ -117,6 +143,7 @@ class NodeParameter(QWidget):
         y = pos.y() + self.height() / 2 - self.port.radius
         self.port.setPos(QPointF(x, y))
 
+
     def get_value(self):
         if isinstance(self._value_widget, QSpinBox) or isinstance(self._value_widget, QDoubleSpinBox):
             return self._value_widget.value()
@@ -131,6 +158,9 @@ class NodeParameter(QWidget):
     
     def on_connection_changed(self):
         if self.port and self.port.port_type == "input":
-            is_connected = self.port.connected_wire is not None
+            is_connected = (
+                (self.port.accept_multiple_wires and len(self.port.connected_wires) > 0) or
+                (not self.port.accept_multiple_wires and self.port.connected_wire is not None)
+            )
             if self._value_widget:
                 self._value_widget.setVisible(not is_connected)

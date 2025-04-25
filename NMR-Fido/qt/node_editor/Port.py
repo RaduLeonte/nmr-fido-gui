@@ -15,12 +15,13 @@ class Port(QGraphicsEllipseItem):
         "array": "#6363c7"
     }
     
-    def __init__(self, port_type, data_type, parent_widget):
+    def __init__(self, port_type: str, data_type: str, parent_widget, accept_multiple_wires: bool=False):
         self.radius = 6
         self.port_type = port_type
         self.data_type = data_type
         self.color = self.color_map.get(self.data_type, "#a1a1a1")
         
+        self.accept_multiple_wires = accept_multiple_wires
         self.connected_wires = []  # for output ports
         self.connected_wire = None  # for input ports
         
