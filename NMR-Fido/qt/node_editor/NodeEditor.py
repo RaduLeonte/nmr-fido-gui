@@ -306,30 +306,34 @@ class NodeEditor(QGraphicsView):
 
     #region Key press
     def keyPressEvent(self, event: QKeyEvent):
-        if event.key() == Qt.Key.Key_Delete:
+        """Del | X"""
+        if event.key() == Qt.Key.Key_Delete or event.key() == Qt.Key.Key_X:
             for item in self.scene().selectedItems():
                 if isinstance(item, Node):
                     self.remove(item)
             event.accept()
             return
         
-        if (event.key() == Qt.Key.Key_C and event.modifiers() & Qt.KeyboardModifier.ControlModifier):
+        """CTRL + C"""
+        if (event.modifiers() & Qt.KeyboardModifier.ControlModifier and event.key() == Qt.Key.Key_C):
             self._copied_nodes = [node for node in self.nodes if node.isSelected()]
             event.accept()
             return
-        
-        if (event.key() == Qt.Key.Key_V and event.modifiers() & Qt.KeyboardModifier.ControlModifier):
+        """CTRL + V"""
+        if (event.modifiers() & Qt.KeyboardModifier.ControlModifier and event.key() == Qt.Key.Key_V):
             self._paste_nodes()
             event.accept()
             return
         
+        """CTRL + R"""
         if (event.modifiers() & Qt.KeyboardModifier.ControlModifier and event.key() == Qt.Key.Key_R):
             self.trigger_evaluation()
             event.accept()
             return
         
-        if (event.key() == Qt.Key.Key_A and
-            event.modifiers() & Qt.KeyboardModifier.ShiftModifier):
+        """SHIFT + A"""
+        if (event.modifiers() & Qt.KeyboardModifier.ShiftModifier and
+            event.key() == Qt.Key.Key_A):
             
             # Store mouse position in scene coords
             cursor_pos = QCursor.pos()
