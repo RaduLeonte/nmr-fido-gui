@@ -583,5 +583,33 @@ class NodeEditor(QGraphicsView):
         print(f"Graph evaluated in: {int(minutes)}m {int(seconds)}s {int(milliseconds):.0f}ms")
         self._is_ready = True
         return results
+    
+    
+    def spawn_debugging_nodes(self) -> None:
+        import_data_node = ImportDataNode(default_path="test.fid")
+        self.add(import_data_node, QPointF(-900, 200))
+        
+        sine_window_node = SineWindowNode()
+        self.add(sine_window_node, QPointF(-600, 0))
+        
+        extract_fid_node = ExtractFIDNode()
+        self.add(extract_fid_node, QPointF(-300, 100))
+        
+        delete_imaginaries_node = DeleteImaginariesNode()
+        self.add(delete_imaginaries_node, QPointF(0, 0))
+        
+        display_node2 = PrintDataNode()
+        self.add(display_node2, QPointF(0, 100))
+        
+        plot_data_node = PlotDataNode()
+        self.add(plot_data_node, QPointF(300, 0))
+        
+        self.connect(import_data_node.outputs["output"].port, sine_window_node.parameters["data"].port)
+        self.connect(sine_window_node.outputs["result"].port, extract_fid_node.parameters["data"].port)
+        self.connect(extract_fid_node.outputs["output"].port, display_node2.parameters["input"].port)
+        self.connect(extract_fid_node.outputs["output"].port, delete_imaginaries_node.parameters["data"].port)
+        self.connect(delete_imaginaries_node.outputs["output"].port, plot_data_node.parameters["data"].port)
+        
+        return
 
     #endregion Node/Graph
