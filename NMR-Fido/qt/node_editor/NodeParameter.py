@@ -38,6 +38,8 @@ class NodeParameter(QWidget):
         self.port = None
         self._value_widget = None
         
+        self.setObjectName("NodeParameter")
+        
         self.setFixedHeight(30)
 
         layout = QHBoxLayout()
@@ -48,11 +50,12 @@ class NodeParameter(QWidget):
         if self.input_port_enabled:
             self._ensure_port("input")
         
+        self.parameter_label = None
         if label is not None:
-            parameter_label = QLabel(label)
+            self.parameter_label = QLabel(label)
             if output_port:
-                parameter_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-            layout.addWidget(parameter_label)
+                self.parameter_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            layout.addWidget(self.parameter_label)
 
         # Input widget (if needed)
         if param_type in ("int", "float", "str"):

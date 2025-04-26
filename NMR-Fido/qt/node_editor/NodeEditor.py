@@ -4,6 +4,7 @@ import numpy as np
 import importlib
 import inspect
 import time
+import traceback
 
 from PySide6.QtCore import *
 from PySide6.QtWidgets import *
@@ -443,7 +444,6 @@ class NodeEditor(QGraphicsView):
         for node in self._copied_nodes[1:]:
             bounding_rect = bounding_rect.united(node.sceneBoundingRect())
         group_center = bounding_rect.center()
-        print(group_center)
 
         new_nodes = []
         for node in self._copied_nodes:
@@ -621,8 +621,14 @@ class NodeEditor(QGraphicsView):
         else:
             self.cache[node]["inputs"] = inputs
             
-            result = node.compute(inputs)
-            self.cache[node]["result"] = result
+            try:
+                result = node.compute(inputs)
+                self.cache[node]["result"] = result
+            except Exception as e:
+                print("Node evaluation")
+                traceback.print_exc()
+                result = None
+                self.cache[node].clear()
             
             return result
 
@@ -660,7 +666,7 @@ class NodeEditor(QGraphicsView):
             results[node] = self.evaluate_node(node)
             visited.add(node)
 
-        # Start from all leaf nodes (no output wires)
+
         for node in self.nodes:
             has_outputs = any(
                 port.connected_wires for param in node.outputs.values()
@@ -685,7 +691,7 @@ class NodeEditor(QGraphicsView):
         sine = SineWindowNode()
         self.add(sine, QPointF(-800, 0))
         
-        plot1 = PlotDataNode()
+        plot1 = Plot1DDataNode()
         self.add(plot1, QPointF(-200, 500))
         
         zf = ZeroFillingNode()
@@ -694,31 +700,57 @@ class NodeEditor(QGraphicsView):
         ft = FourierTransformNode()
         self.add(ft, QPointF(200, 0))
         
-        extfid1 = ExtractFIDNode()
+        extfid1 = ExtractRow()
         self.add(extfid1, QPointF(-500, 300))
         
         math = MathNode(default_values=[None, 350], default_mode="Multiply")
         self.add(math, QPointF(-500, 500))
         
-        extfid2 = ExtractFIDNode()
+        extfid2 = ExtractRow()
         self.add(extfid2, QPointF(-500, 700))
         
-        extfid3 = ExtractFIDNode()
+        extfid3 = ExtractRow()
         self.add(extfid3, QPointF(500, 300))
         
-        plot2 = PlotDataNode()
+        plot2 = Plot1DDataNode()
         self.add(plot2, QPointF(800, 500))
-        
         
         phase = PhaseNode()
         self.add(phase, QPointF(800, 0))
+        
+        extract_x = CropDataPPMNode()
+        self.add(extract_x, QPointF(1200, 0))
+        
+        transpose1 = TransposeNode()
+        self.add(transpose1, QPointF(1500, 0))
+        
+        sine2 = SineWindowNode()
+        self.add(sine2, QPointF(1800, 0))
+        
+        zf2 = ZeroFillingNode()
+        self.add(zf2, QPointF(2100, 0))
+        
+        ft2 = FourierTransformNode()
+        self.add(ft2, QPointF(2400, 0))
+        
+        phase2 = PhaseNode()
+        self.add(phase2, QPointF(2700, 0))
+        
+        extract_y = CropDataPPMNode()
+        self.add(extract_y, QPointF(3000, 0))
+        
+        transpose2 = TransposeNode()
+        self.add(transpose2, QPointF(3300, 0))
+        
+        plot2d = Plot2DDataNode()
+        self.add(plot2d, QPointF(3600, 0))
         
         
         self.connect(import_node.outputs["data"].port, sine.parameters["data"].port)
         self.connect(import_node.outputs["data"].port, extfid2.parameters["data"].port)
         
-        self.connect(sine.outputs["result"].port, zf.parameters["data"].port)
-        self.connect(sine.outputs["result"].port, extfid1.parameters["data"].port)
+        self.connect(sine.outputs["data"].port, zf.parameters["data"].port)
+        self.connect(sine.outputs["data"].port, extfid1.parameters["data"].port)
         self.connect(sine.outputs["window"].port, math.parameters["a"].port)
         
         
@@ -727,13 +759,31 @@ class NodeEditor(QGraphicsView):
         self.connect(list(math.outputs.values())[0].port, plot1.parameters["data"].port)
         
         
-        self.connect(zf.outputs["result"].port, ft.parameters["data"].port)
+        self.connect(zf.outputs["data"].port, ft.parameters["data"].port)
         
         self.connect(list(ft.outputs.values())[0].port, extfid3.parameters["data"].port)
         self.connect(list(extfid3.outputs.values())[0].port, plot2.parameters["data"].port)
         
-        
         self.connect(list(ft.outputs.values())[0].port, phase.parameters["data"].port)
+        
+        self.connect(list(phase.outputs.values())[0].port, extract_x.parameters["data"].port)
+        
+        self.connect(list(extract_x.outputs.values())[0].port, transpose1.parameters["data"].port)
+        
+        self.connect(list(transpose1.outputs.values())[0].port, sine2.parameters["data"].port)
+        
+        self.connect(list(sine2.outputs.values())[0].port, zf2.parameters["data"].port)
+        
+        self.connect(list(zf2.outputs.values())[0].port, ft2.parameters["data"].port)
+        
+        self.connect(list(ft2.outputs.values())[0].port, phase2.parameters["data"].port)
+        
+        self.connect(list(phase2.outputs.values())[0].port, extract_y.parameters["data"].port)
+        
+        self.connect(list(extract_y.outputs.values())[0].port, transpose2.parameters["data"].port)
+        
+        self.connect(list(transpose2.outputs.values())[0].port, plot2d.parameters["data"].port)
+        
         
         return
     

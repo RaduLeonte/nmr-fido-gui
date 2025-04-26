@@ -10,6 +10,7 @@ class Node(QGraphicsProxyWidget):
     def __init__(self, node_structure: dict=None):
         super().__init__()
         
+        
         self.node_editor = None
         
         cls = self.__class__
@@ -131,8 +132,8 @@ class Node(QGraphicsProxyWidget):
 
 
     def _on_widget_changed(self, *args):
-        if self.parent_node and self.parent_node.node_editor:
-            self.parent_node.node_editor.trigger_evaluation()
+        if self.node_editor:
+            self.node_editor.trigger_evaluation()
 
     def _build_body_from_structure(self) -> None:
         """Use the specified node structure to create the node body"""
@@ -201,12 +202,12 @@ class Node(QGraphicsProxyWidget):
                 for wire in port.connected_wires:
                     source_node = wire.output_port.parent_node
                     upstream_result = self.node_editor.evaluate_node(source_node)
-                    values.append(upstream_result.get(wire.output_port.port_id))
+                    values.append(upstream_result.get(wire.output_port.port_id) if upstream_result is not None else None)
                 value = values
             elif port is not None and port.connected_wire:
                 source_node = port.connected_wire.output_port.parent_node
                 upstream_result = self.node_editor.evaluate_node(source_node)
-                value = upstream_result.get(port.connected_wire.output_port.port_id)
+                value = upstream_result.get(port.connected_wire.output_port.port_id) if upstream_result is not None else None
             else:
                 value = widget.get_value() if hasattr(widget, "get_value") else None
 
