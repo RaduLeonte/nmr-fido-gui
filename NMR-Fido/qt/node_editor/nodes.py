@@ -40,11 +40,7 @@ class Plot1DDataNode(Node):
             port_id="data",
             accept_multiple_wires=True,
         )
-        data_input_port.setObjectName("data")
-        data_input_port.parent_node = self
-        data_input_port.port_id = "data"
-        self.parameters["data"] = data_input_port
-        self.node_body_layout.addWidget(data_input_port)
+        self.register_port(data_input_port, "data", "parameters")
         
         scale_input_port = NodeParameter(
             param_type="array",
@@ -57,11 +53,7 @@ class Plot1DDataNode(Node):
             port_id="scale",
             accept_multiple_wires=False,
         )
-        scale_input_port.setObjectName("scale")
-        scale_input_port.parent_node = self
-        scale_input_port.port_id = "scale"
-        self.parameters["scale"] = scale_input_port
-        self.node_body_layout.addWidget(scale_input_port)
+        self.register_port(scale_input_port, "scale", "parameters")
 
         self.plot = pg.PlotWidget()
         layout.addWidget(self.plot)
@@ -82,11 +74,19 @@ class Plot1DDataNode(Node):
         
         color_cycle = ['c', 'm', 'y', 'r', 'g', 'b', 'w']
         for i, data in enumerate(data_inputs):
-            if data is None or data.ndim != 1:
+            if data is None:
                 continue
-                
             
             color = color_cycle[i % len(color_cycle)]
+            
+            if isinstance(data, (int, float, np.number)):
+                hline = pg.InfiniteLine(pos=data, angle=0, pen=color)
+                self.plot.addItem(hline)
+                continue
+            
+            
+            if data.ndim != 1:
+                continue
             
             if isinstance(data, NMRData):
                 scale = data.scales[data.ndim]
@@ -132,11 +132,47 @@ class Plot2DDataNode(Node):
             port_id="data",
             accept_multiple_wires=True,
         )
-        data_input_port.setObjectName("data")
-        data_input_port.parent_node = self
-        data_input_port.port_id = "data"
-        self.parameters["data"] = data_input_port
-        self.node_body_layout.addWidget(data_input_port)
+        self.register_port(data_input_port, "data", "parameters")
+        
+        base_level_port = NodeParameter(
+            param_type="any",
+            label="Base level",
+            data_type="float",
+            input_port=True,
+            output_port=False,
+            proxy_ref=self,
+            parent_node=self,
+            port_id="base_level",
+            accept_multiple_wires=False,
+        )
+        self.register_port(base_level_port, "base_level", "parameters")
+        
+        level_multiplier_port = NodeParameter(
+            param_type="any",
+            label="Level multiplier",
+            data_type="float",
+            input_port=True,
+            output_port=False,
+            proxy_ref=self,
+            parent_node=self,
+            port_id="level_multiplier",
+            accept_multiple_wires=False,
+        )
+        self.register_port(level_multiplier_port, "level_multiplier", "parameters")
+        
+        
+        nr_levels = NodeParameter(
+            param_type="any",
+            label="Number of levels",
+            data_type="int",
+            input_port=True,
+            output_port=False,
+            proxy_ref=self,
+            parent_node=self,
+            port_id="nr_levels",
+            accept_multiple_wires=False,
+        )
+        self.register_port(nr_levels, "nr_levels", "parameters")
         
 
         self.plot = pg.PlotWidget()
@@ -158,9 +194,20 @@ class Plot2DDataNode(Node):
         return k*np.median(np.abs(data - median))
 
     def compute(self, inputs):
-        data_inputs = inputs["data"]
+        data_inputs, base_level, level_multiplier, nr_levels = (
+            inputs.get(k, None) for k in ("data", "base_level", "level_multiplier", "nr_levels")
+        )
+        
         self.plot.clear()
         
+        if level_multiplier is None:
+            level_multiplier = 1.1
+        if nr_levels is None:
+            nr_levels = 12
+        
+        
+        global_xmin, global_xmax = None, None
+        global_ymin, global_ymax = None, None
         
         color_cycle = ['c', 'm', 'y', 'r', 'g', 'b', 'w']
         
@@ -170,24 +217,92 @@ class Plot2DDataNode(Node):
 
             data = np.real(data)
             color = color_cycle[i % len(color_cycle)]
-            base_level = self._median_absolute_deviation(data, k=4)
-            levels = [base_level*(1.1**j) for j in range(10)]
+            
+            if base_level is None:
+                base_level = self._median_absolute_deviation(data, k=4)
+            
+            levels_positive = [base_level * (level_multiplier ** j) for j in range(nr_levels)]
+            levels_negative = [-l for l in levels_positive]
+            
+            if isinstance(data, NMRData) and len(data.scales) >= 2:
+                y_scale = data.scales[-2]
+                x_scale = data.scales[-1]
 
-            path = QPainterPath()
+                y_size, x_size = data.shape
 
-            for level in levels:
-                contours = measure.find_contours(data, level=level)
-                for contour in contours:
-                    if contour.shape[0] < 2:
-                        continue  # Ignore tiny junk
-                    path.moveTo(contour[0, 1], contour[0, 0])
-                    for pt in contour[1:]:
-                        path.lineTo(pt[1], pt[0])
+                x_pixel_to_scale = lambda xi: np.interp(xi, [0, x_size-1], [x_scale[0], x_scale[-1]])
+                y_pixel_to_scale = lambda yi: np.interp(yi, [0, y_size-1], [y_scale[0], y_scale[-1]])
 
-            item = QGraphicsPathItem(path)
-            item.setPen(pg.mkPen(color=color, width=1))
-            item.setZValue(10 + i)
-            self.plot.addItem(item)
+                invert_x = x_scale[0] > x_scale[-1]
+                invert_y = y_scale[0] > y_scale[-1]
+
+            else:
+                # fallback: pixels = scales
+                x_pixel_to_scale = lambda xi: xi
+                y_pixel_to_scale = lambda yi: yi
+                invert_x = False
+                invert_y = False
+
+            def draw_contours(levels, pen_color):
+                path = QPainterPath()
+                for level in levels:
+                    contours = measure.find_contours(data, level=level)
+                    for contour in contours:
+                        if contour.shape[0] < 2:
+                            continue
+                        x0 = x_pixel_to_scale(contour[0, 1])
+                        y0 = y_pixel_to_scale(contour[0, 0])
+                        path.moveTo(x0, y0)
+                        for pt in contour[1:]:
+                            x = x_pixel_to_scale(pt[1])
+                            y = y_pixel_to_scale(pt[0])
+                            path.lineTo(x, y)
+                item = QGraphicsPathItem(path)
+                item.setPen(pg.mkPen(color=pen_color, width=1))
+                item.setZValue(10 + i)
+                self.plot.addItem(item)
+
+            draw_contours(levels_positive, color)
+
+            # Draw negative levels with inverted color
+            inverted_qcolor = QColor(color)
+            inverted_qcolor = QColor(255 - inverted_qcolor.red(), 255 - inverted_qcolor.green(), 255 - inverted_qcolor.blue())
+            draw_contours(levels_negative, inverted_qcolor)
+                
+            
+            if isinstance(data, NMRData):
+                if global_xmin is None:
+                    global_xmin, global_xmax = x_scale[0], x_scale[-1]
+                    global_ymin, global_ymax = y_scale[0], y_scale[-1]
+                else:
+                    global_xmin = min(global_xmin, x_scale[0])
+                    global_xmax = max(global_xmax, x_scale[-1])
+                    global_ymin = min(global_ymin, y_scale[0])
+                    global_ymax = max(global_ymax, y_scale[-1])
+            else:
+                h, w = data.shape
+                if global_xmin is None:
+                    global_xmin, global_xmax = 0, w
+                    global_ymin, global_ymax = 0, h
+                else:
+                    global_xmax = max(global_xmax, w)
+                    global_ymax = max(global_ymax, h)
+
+
+        if global_xmin is not None and global_xmax is not None:
+            self.plot.setXRange(global_xmin, global_xmax, padding=0)
+            if invert_x:
+                self.plot.getViewBox().invertX(True)
+            else:
+                self.plot.getViewBox().invertX(False)
+
+        if global_ymin is not None and global_ymax is not None:
+            self.plot.setYRange(global_ymin, global_ymax, padding=0)
+            if invert_y:
+                self.plot.getViewBox().invertY(True)
+            else:
+                self.plot.getViewBox().invertY(False)
+
 
         return {}
 
@@ -212,11 +327,7 @@ class ImportDataNode(Node):
             parent_node=self,
             port_id="data",
         )
-        output_port1.setObjectName("data")
-        output_port1.parent_node = self
-        output_port1.port_id = "data"
-        self.outputs["data"] = output_port1
-        self.node_body_layout.addWidget(output_port1)
+        self.register_port(output_port1, "data", "output")
 
 
         self.open_file_button = QPushButton("Open file")
@@ -318,11 +429,7 @@ class PrintDataNode(Node):
             input_port=True,
             proxy_ref=self
         )
-        input_widget.setObjectName("input")
-        input_widget.parent_node = self
-        input_widget.port_id = "input"
-        self.parameters["input"] = input_widget
-        self.node_body_layout.addWidget(input_widget)
+        self.register_port(input_widget, "input", "parameters")
 
         self.display_area = QTextEdit()
         self.display_area.setReadOnly(True)  # Prevent user editing
@@ -367,6 +474,9 @@ class MathNode(Node):
     def compute(self, inputs):
         mode, a, b = (inputs[k] for k in ("mode", "a", "b"))
         
+        if a is None or b is None:
+            return {"data": None}
+        
         match mode:
             case "Add":
                 return {"data": a + b}
@@ -403,10 +513,22 @@ class MinMaxNode(Node):
     def compute(self, inputs):
         data, mode = (inputs[k] for k in ("data", "mode"))
         
-        if mode == "Min":
-            return {"data": min(data)}
+        if data is None:
+            return {"data": None}
+        
+        
+        if isinstance(data, np.ndarray):
+            flat_data = np.ravel(data)
         else:
-            return {"data": max(data)}
+            flat_data = data 
+
+        
+        if mode == "Min":
+            result = np.min(flat_data)
+        else:
+            result = np.max(flat_data)
+            
+        return {"data": float(np.real(result))}
     
 """
 Constant value nodes
@@ -507,7 +629,7 @@ class SineWindowNode(Node):
         result[..., 0] = result[..., 0] * c
         
         if isinstance(data, NMRData):
-            result = NMRData(result, scales=data.scales, dic=data.dic)
+            result = NMRData(result, copy_from=data)
         
         return {"data": result, "window": window}
     
@@ -582,7 +704,8 @@ class ZeroFillingNode(Node):
             scales = data.scales.copy()
             scales[-1] = np.arange(0, result.shape[-1])
             
-            result = NMRData(result, scales=scales, scale_units=data.scale_units, dic=data.dic)
+            result = NMRData(result, copy_from=data)
+            result.scales = scales
             
         
         self._set_output_label(result.shape)
@@ -674,10 +797,11 @@ class FourierTransformNode(Node):
             
             
         if isinstance(data, NMRData):
-            dim = f"FDF{data.ndim}"
+            dimension_code = data.nuclei_indices[-1] # Get dimension index of last axis
+            dim = f"FDF{dimension_code}" # Get dimension code
             sw_Hz, obs_MHz, orig = (data.dic[k] for k in [dim + v for v in ["SW", "OBS", "ORIG"]]) # Hz, MHz, Hz
 
-            size = len(result)
+            size = result.shape[-1]
             points = np.arange(size)
             
             o1_Hz = orig + sw_Hz/2 - sw_Hz / size
@@ -687,9 +811,10 @@ class FourierTransformNode(Node):
             scales[-1] = ppm
             
             scale_units = data.scale_units[:-1] + ["ppm"]
-            dic = data.dic
             
-            result = NMRData(result, scales=scales, scale_units=scale_units, dic=dic)
+            result = NMRData(result, copy_from=data)
+            result.scales = scales
+            result.scale_units = scale_units
         
         return {"data": result}
 
@@ -722,9 +847,19 @@ class TransposeNode(Node):
         label = self.outputs["data"].parameter_label
         label.setText(f"{shape} Data")
         return
+    
+    
+    def reorder_metadata(self, input_list: list, target_index: int):
+        size = len(input_list)
+        axes = list(range(size))
+        to_move = axes.pop(target_index)
+        axes.insert(size, to_move)
+        return [input_list[i] for i in axes]
+
 
     def compute(self, inputs: dict):
         data, dim = (inputs.get(k, None) for k in ("data", "dim"))
+        
         
         if data is None:
             self._set_input_label()
@@ -737,11 +872,25 @@ class TransposeNode(Node):
         
         if dim == 0:
             # No specific dimension selected → transpose all
+            print(list(range(data.ndim)))
+            new_axes = list(reversed(range(data.ndim)))
+            print(new_axes)
             result = np.transpose(data)
+            
+            if isinstance(result, NMRData):
+                result.nuclei_indices = [data.nuclei_indices[i] for i in new_axes]
+                result.scales = [data.scales[i] for i in new_axes]
+                result.scale_units = [data.scale_units[i] for i in new_axes]
+            
         else:
             # Move selected dimension to the last
             if dim < data.ndim:
                 result = np.moveaxis(data, source=dim-1, destination=-1)
+                
+                if isinstance(result, NMRData):
+                    result.nuclei_indices = self.reorder_metadata(data.nuclei_indices, target_index=dim-1)
+                    result.scales = self.reorder_metadata(data.scales, target_index=dim-1)
+                    result.scale_units = self.reorder_metadata(data.scale_units, target_index=dim-1)
             else:
                 # Invalid dim
                 result = data  # no change
@@ -1012,6 +1161,11 @@ class CropDataPPMNode(Node):
         label = self.outputs["data"].parameter_label
         label.setText(f"{shape} Data")
         return
+    
+    
+    def find_index_of_nearest(self, data: list|np.ndarray, target: int|float) -> int:
+        return min(range(len(data)), key=lambda i: abs(data[i] - target))
+
 
     def compute(self, inputs: dict):      
         data, start_ppm, end_ppm = (inputs[k] for k in ("data", "start_ppm", "end_ppm"))
@@ -1019,20 +1173,30 @@ class CropDataPPMNode(Node):
         self._set_input_label()
         self._set_output_label()
         
-        if data is None:
+        if data is None or not isinstance(data, NMRData):
             return {"data": None}
         
         self._set_input_label(data.shape)
         
-        if start_ppm >= end_ppm:
+        if start_ppm <= end_ppm or data.scale_units[-1] != "ppm":
             self._set_output_label(data.shape)
             return {"data": data}
         else:
-            #size = data.shape[-1]
-            #start_index = int(size*start_ppm)
-            #end_index = int(size*end_ppm)
-            #
-            #slices = [slice(None)] * (data.ndim - 1) + [slice(start_index, end_index)]
-            #cropped = data[tuple(slices)]
-            self._set_output_label(data.shape)
-            return {"data": data}
+                        
+            scales = data.scales.copy()
+            scale = scales[-1]
+            
+            start_index = self.find_index_of_nearest(scale, start_ppm)
+            end_index = self.find_index_of_nearest(scale, end_ppm)
+            
+            slices = [slice(None)] * (data.ndim - 1) + [slice(start_index, end_index)]
+            
+            # crop data
+            cropped = data[tuple(slices)] 
+            
+            # crop scale
+            scales[-1] = scale[start_index: end_index] 
+            cropped.scales = scales
+                        
+            self._set_output_label(cropped.shape)
+            return {"data": cropped}

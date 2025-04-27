@@ -438,7 +438,7 @@ class NodeEditor(QGraphicsView):
         else:
             cursor = Qt.CursorShape.ArrowCursor
         
-        print(f"NodeEditor._update_cursor() -> {cursor=}")
+        #print(f"NodeEditor._update_cursor() -> {cursor=}")
         self.setCursor(cursor)
         
         return

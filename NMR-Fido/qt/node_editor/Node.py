@@ -75,6 +75,7 @@ class Node(QGraphicsProxyWidget):
                     widget._update_port_position()
 
 
+    #region Init UI
     def _init_ui(self) -> None:
         self.node_frame = QFrame()
         self.node_frame.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
@@ -135,6 +136,7 @@ class Node(QGraphicsProxyWidget):
         if self.node_editor:
             self.node_editor.trigger_evaluation()
 
+    #region Build from structure
     def _build_body_from_structure(self) -> None:
         """Use the specified node structure to create the node body"""
         if "outputs" in self.node_structure:
@@ -153,11 +155,7 @@ class Node(QGraphicsProxyWidget):
                     parent_node=self,
                     port_id=output_id,
                 )
-                widget.setObjectName(output_id)
-                widget.parent_node = self
-                widget.port_id = output_id
-                self.outputs[output_id] = widget
-                self.node_body_layout.addWidget(widget)
+                self.register_port(widget, output_id, "output")
             
         if "parameters" in self.node_structure:
             for param in self.node_structure["parameters"]:
@@ -178,11 +176,7 @@ class Node(QGraphicsProxyWidget):
                     parent_node=self,
                     port_id=param_id,
                 )
-                widget.setObjectName(param_id)
-                widget.parent_node = self
-                widget.port_id = param_id
-                self.parameters[param_id] = widget
-                self.node_body_layout.addWidget(widget)
+                self.register_port(widget, param_id, "parameter")
         
         return
     
@@ -190,6 +184,21 @@ class Node(QGraphicsProxyWidget):
     def _build_custom_body(self) -> None:
         """Create the body of the node"""
         pass
+    
+    
+    def register_port(self, widget: QWidget, id: str, port_type: str) -> None:
+        #print("Node.register_port() -> ", widget, id, port_type)
+        widget.setObjectName(id)
+        widget.parent_node = self
+        widget.port_id = id
+        
+        if port_type == "output" or port_type == "outputs":
+            self.outputs[id] = widget
+        else: 
+            self.parameters[id] = widget
+    
+        self.node_body_layout.addWidget(widget)
+        return
     
     
     def prepare_inputs(self):
