@@ -250,7 +250,6 @@ class ImportDataNode(Node):
 
     def compute(self, inputs):
         path = inputs["path"]
-        print(path)
         
         if os.path.isfile(path):
             # It's a file -> read normally
@@ -298,7 +297,6 @@ class TestNode(Node):
         })
 
     def compute(self, inputs):
-        #print("TestNode inputs:", inputs)
         return {"output": float(inputs.get("input_float", 0))}
     
     
@@ -338,7 +336,6 @@ class PrintDataNode(Node):
         self.node_body_layout.addWidget(self.display_area)
 
     def compute(self, inputs):
-        #print("PrintDataNode.compute() -> ", inputs)
         value = inputs["input"]
         if value is None:
             text = "None"
@@ -431,7 +428,6 @@ class ConstantIntNode(Node):
         })
 
     def compute(self, inputs):
-        #print("ConstantIntNode.compute() -> ", inputs)
         return {"output": inputs["value"]}
 
 
@@ -451,7 +447,6 @@ class ConstantFloatNode(Node):
         })
 
     def compute(self, inputs):
-        #print("ConstantFloatNode.compute() -> ", inputs)
         return {"output": inputs["value"]}
 #endregion Constants value nodes
 
@@ -690,11 +685,6 @@ class FourierTransformNode(Node):
             
             scales = data.scales.copy()
             scales[-1] = ppm
-            
-            print("ppm -> ", np.array2string(ppm, max_line_width=100, precision=3, threshold=5))
-            print("scales -> ")
-            for scale in scales:
-                print(np.array2string(scale, max_line_width=100, precision=3, threshold=5))
             
             scale_units = data.scale_units[:-1] + ["ppm"]
             dic = data.dic

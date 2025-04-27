@@ -5,6 +5,8 @@ import importlib
 import inspect
 import time
 import traceback
+import json
+
 
 from PySide6.QtCore import *
 from PySide6.QtWidgets import *
@@ -17,10 +19,11 @@ from qt.node_editor.Wire import Wire
 from qt.node_editor.Port import Port
 
 class NodeEditor(QGraphicsView):
-    def __init__(self, scene_size: tuple=(10_000, 5_000), background_color: str="#1d1d1d"):
+    def __init__(self, parent_container: QWidget, scene_size: tuple=(10_000, 5_000), background_color: str="#1d1d1d"):
         self.nodes = []
         self.connections = []
         self.cache = {}
+        
         
         self.graphics_scene = QGraphicsScene()
         width, height = scene_size
@@ -30,7 +33,6 @@ class NodeEditor(QGraphicsView):
         self.setRenderHints(self.renderHints() | QPainter.RenderHint.Antialiasing | QPainter.SmoothPixmapTransform)
         self.setDragMode(QGraphicsView.RubberBandDrag)
         self.setBackgroundBrush(QColor(background_color))
-        self.setCursor(Qt.CursorShape.ArrowCursor)
         self._mouse_offset = QPointF()
         self._pressed_item = None
         self._selected_item_offsets = {}
@@ -53,9 +55,36 @@ class NodeEditor(QGraphicsView):
         
         self._copied_nodes = []
         
-        self._init_context_menu()
         
-        self._is_ready = False
+        self.parent_container = parent_container
+        self._graph_path = ""
+        self._file_name = "untitled" 
+        self._unsaved_changes = False
+        self._update_container_title()
+        
+        
+        self._autosave_timer = QTimer()
+        self._autosave_timer.timeout.connect(self._autosave)
+        self._autosave_timer.start(30 * 1E3)  # s
+        self._autosave_path = ".autosave.json"
+        
+        self._init_context_menu()
+        self._update_cursor()
+        
+        self._allow_graph_evaluation = False
+        
+        
+    def _update_container_title(self):
+        if self._graph_path:
+            self._file_name = os.path.basename(self._graph_path)
+        else:
+            self._file_name = "untitled"
+        
+        base_name = self._file_name
+        if self._unsaved_changes:
+            base_name = base_name + "*"
+
+        self.parent_container.setTitle(f'Node Editor - {base_name}')
     
     
     #region Load nodes
@@ -70,14 +99,14 @@ class NodeEditor(QGraphicsView):
                     node_classes[category] = []
                 node_classes[category].append(obj)
 
-        return node_classes
+        return node_classes    
     
     
     #region Context menu
     def _init_context_menu(self) -> None:
         self.context_menu = QMenu(self)
 
-        # Add actions to the menu
+        """ Add nodes menu """
         self.add_node_menu = self.context_menu.addMenu("Add Node")
         self.node_class_map = self._load_nodes()
         for category, class_list in self.node_class_map.items():
@@ -86,18 +115,45 @@ class NodeEditor(QGraphicsView):
                 action = QAction(cls.title, self)
                 action.triggered.connect(lambda checked=False, cls=cls: self._spawn_node(cls))
                 category_menu.addAction(action)
+        
+        
+        self.context_menu.addSeparator()
 
+
+        """ Viewer actions """
         reset_zoom_action = QAction("Reset Zoom", self)
         reset_zoom_action.triggered.connect(self.reset_zoom)
         self.context_menu.addAction(reset_zoom_action)
         
         
+        self.context_menu.addSeparator()
+
+        open_action = QAction("Open", self)
+        open_action.setShortcut("Ctrl+O")
+        open_action.triggered.connect(self.open_graph_dialog)
+        self.context_menu.addAction(open_action)
+        
+        
+        save_action = QAction("Save", self)
+        save_action.setShortcut("Ctrl+S")
+        save_action.triggered.connect(self.save_graph)
+        self.context_menu.addAction(save_action)
+
+        save_as_action = QAction("Save As...", self)
+        save_as_action.setShortcut("Ctrl+Shift+S")
+        save_as_action.triggered.connect(self.save_graph_dialog)
+        self.context_menu.addAction(save_as_action)
+
+        
+        """ Debug menu """
         debug_menu = self.context_menu.addMenu("Debug")
         
+        # Print node positions
         print_node_pos = QAction("Print node positions", self)
         print_node_pos.triggered.connect(self._print_node_positions)
         debug_menu.addAction(print_node_pos)
         
+        # Init position of context menu in scene
         self._context_menu_scene_pos = QPointF()
         return
     
@@ -111,14 +167,16 @@ class NodeEditor(QGraphicsView):
     
     
     #region Events
-    def showEvent(self, event):
+    def showEvent(self, event) -> None:
         super().showEvent(event)
-        if not self._is_ready:
+        if not self._allow_graph_evaluation:
             QTimer.singleShot(0, self._mark_ready)
+        return
     
-    def _mark_ready(self):
-        self._is_ready = True
+    def _mark_ready(self) -> None:
+        self._allow_graph_evaluation= True
         self.trigger_evaluation()
+        return 
     
     
     #region Zoom
@@ -151,21 +209,31 @@ class NodeEditor(QGraphicsView):
         delta_scene = new_pos - old_pos
 
         self.translate(delta_scene.x(), delta_scene.y())
+        
+        self._update_cursor()
     
 
     #region Mouse press
     def mousePressEvent(self, event):
+        # If clicking on a plot widget, send the event to the widget
         if self._forward_event_to_plotwidget(event):
             return
         
+        
+        """ Mouse wheel -> Start pan"""
         if event.button() == Qt.MouseButton.MiddleButton:
             self._is_panning = True
-            self.setCursor(Qt.CursorShape.SizeAllCursor)
             self._pan_start = event.position().toPoint()
             event.accept()
+            self._update_cursor()
             return
         
-        if event.button() == Qt.MouseButton.RightButton and event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+        
+        """ CTRL + Right click -> Start wire cutting"""
+        if (
+            event.modifiers() & Qt.KeyboardModifier.ControlModifier and
+            event.button() == Qt.MouseButton.RightButton
+        ):
             self._cutting = True
             self._cut_points = [self.mapToScene(event.position().toPoint())]
             self._cut_path = QGraphicsPathItem()
@@ -175,11 +243,14 @@ class NodeEditor(QGraphicsView):
             event.accept()
             return
 
-        self.setCursor(Qt.CursorShape.ArrowCursor)
-        pressed_item = self.itemAt(event.position().toPoint())
+
+        """ Default """
+        scene_pos = self.mapToScene(event.position().toPoint())
+        clicked_item = self.itemAt(event.position().toPoint())
         
-        if isinstance(pressed_item, Node):
-            proxy = pressed_item  # QGraphicsProxyWidget
+        """ Check for clicking inside input fields """
+        if isinstance(clicked_item, Node):
+            proxy = clicked_item  # QGraphicsProxyWidget
             widget = proxy.widget()
             if widget is not None:
                 scene_pos = self.mapToScene(event.position().toPoint())
@@ -193,33 +264,51 @@ class NodeEditor(QGraphicsView):
                         return
                     child = child.parentWidget()
         
-        
+        # Save selection
         original_selection = set(self.scene().selectedItems())
+        
         super().mousePressEvent(event)
+        self._update_cursor()
 
+        """ Single click on Node"""
         self._pressed_item = self.itemAt(event.position().toPoint())
         if isinstance(self._pressed_item, Node):
             if self._pressed_item in original_selection:
+                """ Node is already in selection """
+                # Reselect everything
                 for item in original_selection:
                     item.setSelected(True)
+                
+                # If the shift key is pressed -> remove Node from selection
                 if event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
                     self._pressed_item.setSelected(False)
             else:
+                """ Node is not already in the selection"""
+                
                 if event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
+                    # Shift -> add Node to selection
                     self._pressed_item.setSelected(True)
+                    
+                    # Reselect everything
                     for item in original_selection:
                         item.setSelected(True)
                 else:
+                    # Default ->  Clear selection and select only pressed Node
                     self.scene().clearSelection()
                     self._pressed_item.setSelected(True)
         else:
+            """ Clicked outside a node -> deselect everything"""
             self.scene().clearSelection()
 
+
+        # Prepare for dragging multiple nodes
         self._selected_item_offsets.clear()
         scene_pos = self.mapToScene(event.position().toPoint())
         for item in self.scene().selectedItems():
             if isinstance(item, Node):
                 self._selected_item_offsets[item] = item.pos() - scene_pos
+                
+        return
 
     #region Mouse move
     def mouseMoveEvent(self, event):
@@ -274,7 +363,6 @@ class NodeEditor(QGraphicsView):
                         return
                     child = child.parentWidget()
 
-        self.setCursor(Qt.CursorShape.ArrowCursor)
 
         if (
             event.buttons() & Qt.MouseButton.LeftButton and
@@ -286,6 +374,7 @@ class NodeEditor(QGraphicsView):
                     item.setPos(scene_pos + offset)
         else:
             super().mouseMoveEvent(event)
+            self._update_cursor()
             
   
     #region Mouse release
@@ -295,8 +384,8 @@ class NodeEditor(QGraphicsView):
         
         if event.button() == Qt.MouseButton.MiddleButton and self._is_panning:
             self._is_panning = False
-            self.setCursor(Qt.CursorShape.ArrowCursor)
             event.accept()
+            self._update_cursor()
             return
         
         if self._cutting:
@@ -334,46 +423,106 @@ class NodeEditor(QGraphicsView):
         if self._pending_node:
             self.nodes.append(self._pending_node)
             self._pending_node = None
-            self.setCursor(Qt.CursorShape.ArrowCursor)
+            self._update_cursor()
             return
         
-        self.setCursor(Qt.CursorShape.ArrowCursor)
         self._pressed_item = None
         self._selected_item_offsets.clear()
         super().mouseReleaseEvent(event)
+        self._update_cursor()
+        return
+    
+    def _update_cursor(self) -> None:
+        if self._is_panning or self._pending_node is not None:
+            cursor = Qt.CursorShape.SizeAllCursor
+        else:
+            cursor = Qt.CursorShape.ArrowCursor
+        
+        print(f"NodeEditor._update_cursor() -> {cursor=}")
+        self.setCursor(cursor)
+        
         return
 
 
     #region Key press
     def keyPressEvent(self, event: QKeyEvent):
-        """Del | X"""
-        if event.key() == Qt.Key.Key_Delete or event.key() == Qt.Key.Key_X:
+        """Del | X -> Delete selected nodes"""
+        if (
+            event.key() == Qt.Key.Key_Delete or
+            event.key() == Qt.Key.Key_X
+        ):
+            self._allow_graph_evaluation = False
             for item in self.scene().selectedItems():
                 if isinstance(item, Node):
                     self.remove(item)
-            event.accept()
-            return
-        
-        """CTRL + C"""
-        if (event.modifiers() & Qt.KeyboardModifier.ControlModifier and event.key() == Qt.Key.Key_C):
-            self._copied_nodes = [node for node in self.nodes if node.isSelected()]
-            event.accept()
-            return
-        """CTRL + V"""
-        if (event.modifiers() & Qt.KeyboardModifier.ControlModifier and event.key() == Qt.Key.Key_V):
-            self._paste_nodes()
-            event.accept()
-            return
-        
-        """CTRL + R"""
-        if (event.modifiers() & Qt.KeyboardModifier.ControlModifier and event.key() == Qt.Key.Key_R):
+            self._allow_graph_evaluation = True
             self.trigger_evaluation()
             event.accept()
             return
         
+        
+        """CTRL + C -> Copy nodes"""
+        if (
+            event.modifiers() & Qt.KeyboardModifier.ControlModifier and
+            event.key() == Qt.Key.Key_C
+        ):
+            self._copy_nodes()
+            event.accept()
+            return
+        """CTRL + V -> Paste nodes"""
+        if (
+            event.modifiers() & Qt.KeyboardModifier.ControlModifier and
+            event.key() == Qt.Key.Key_V
+        ):
+            self._paste_nodes()
+            event.accept()
+            return
+        
+        
+        """CTRL + R -> Trigger graph evaluation"""
+        if (
+            event.modifiers() & Qt.KeyboardModifier.ControlModifier and
+            event.key() == Qt.Key.Key_R
+        ):
+            self.trigger_evaluation()
+            event.accept()
+            return
+        
+        
+        """CTRL + O -> Open/load graph"""
+        if (
+            event.modifiers() & Qt.KeyboardModifier.ControlModifier and
+            event.key() == Qt.Key.Key_O
+        ):
+            self.open_graph_dialog()
+            event.accept()
+            return
+        
+        """CTRL + S -> Save graph to current file"""
+        if (
+            event.modifiers() & Qt.KeyboardModifier.ControlModifier and
+            event.key() == Qt.Key.Key_S
+        ):
+            self.save_graph()
+            event.accept()
+            return
+        
+        """CTRL + Shift + S -> Save graph to current file"""
+        if (
+            event.modifiers() & Qt.KeyboardModifier.ControlModifier and
+            event.modifiers() & Qt.KeyboardModifier.ShiftModifier and
+            event.key() == Qt.Key.Key_S
+        ):
+            self.save_graph_dialog()
+            event.accept()
+            return
+        
+        
         """SHIFT + A"""
-        if (event.modifiers() & Qt.KeyboardModifier.ShiftModifier and
-            event.key() == Qt.Key.Key_A):
+        if (
+            event.modifiers() & Qt.KeyboardModifier.ShiftModifier and
+            event.key() == Qt.Key.Key_A
+        ):
             
             # Store mouse position in scene coords
             cursor_pos = QCursor.pos()
@@ -432,53 +581,146 @@ class NodeEditor(QGraphicsView):
                     child = child.parentWidget()
         return False
 
-    
+    #region Copy nodes
+    def _copy_nodes(self) -> None:
+        selected_nodes = [node for node in self.nodes if node.isSelected()]
+        selected_node_set = set(selected_nodes)
+
+        copied_data = {
+            "nodes": [],
+            "connections": []
+        }
+
+        node_id_map = {node: idx for idx, node in enumerate(selected_nodes)}
+
+        # Save selected nodes
+        for node in selected_nodes:
+            node_data = {
+                "id": node_id_map[node],
+                "class": node.__class__.__name__,
+                "pos": [node.pos().x(), node.pos().y()],
+                "parameters": {}
+            }
+
+            for param_id, param in node.parameters.items():
+                try:
+                    value = param.get_value()
+                    node_data["parameters"][param_id] = value
+                except Exception as e:
+                    print(f"Warning: Could not copy param {param_id}: {e}")
+
+            copied_data["nodes"].append(node_data)
+
+        # Save internal connections
+        for item in self.scene().items():
+            if isinstance(item, Wire):
+                output_node = item.output_port.parent_node
+                input_node = item.input_port.parent_node
+
+                if output_node in selected_node_set and input_node in selected_node_set:
+                    copied_data["connections"].append({
+                        "output_node_id": node_id_map[output_node],
+                        "output_port_id": item.output_port.port_id,
+                        "input_node_id": node_id_map[input_node],
+                        "input_port_id": item.input_port.port_id
+                    })
+
+        self._copied_nodes = copied_data
+        
+        return
     
     
     #region Paste nodes
-    def _paste_nodes(self):
+    def _paste_nodes(self) -> None:
+        if not self._copied_nodes:
+            return
+
         cursor_pos = QCursor.pos()
         scene_center = self.mapToScene(self.mapFromGlobal(cursor_pos))
-        
-        bounding_rect = self._copied_nodes[0].sceneBoundingRect()
-        for node in self._copied_nodes[1:]:
-            bounding_rect = bounding_rect.united(node.sceneBoundingRect())
+
+        copied_data = self._copied_nodes
+        node_id_map = {}  # copied id -> new node instance
+
+        nodes = copied_data["nodes"]
+
+        # Calculate group center
+        bounding_rect = QRectF()
+        first = True
+        for node_data in nodes:
+            pos = QPointF(*node_data["pos"])
+            if first:
+                bounding_rect = QRectF(pos, QSizeF(1, 1))
+                first = False
+            else:
+                bounding_rect = bounding_rect.united(QRectF(pos, QSizeF(1, 1)))
         group_center = bounding_rect.center()
 
-        new_nodes = []
-        for node in self._copied_nodes:
-            # Instantiate a new node of the same class
-            new_node = node.__class__()
+        # Create new nodes
+        for node_data in nodes:
+            cls_name = node_data["class"]
+            cls = self._find_node_class_by_name(cls_name)
+            if cls is None:
+                print(f"Warning: Node class {cls_name} not found.")
+                continue
+
+            new_node = cls()
             new_node.node_editor = self
 
-            original_center = node.sceneBoundingRect().center()
-            original_top_left = node.sceneBoundingRect().topLeft()
-            offset_from_center_to_top_left = original_top_left - original_center
-            
-            new_pos = scene_center + (node.sceneBoundingRect().center() - group_center) + offset_from_center_to_top_left
-            new_node.setPos(new_pos)
+            # Position relative to group center
+            original_pos = QPointF(*node_data["pos"])
+            offset = original_pos - group_center
+            new_node.setPos(scene_center + offset)
 
-            # Copy parameter values if applicable
-            for param_id, param in node.parameters.items():
-                new_param = new_node.parameters.get(param_id)
-                if new_param and hasattr(param, "_value_widget") and hasattr(new_param, "_value_widget"):
-                    val = param.get_value()
-                    if hasattr(new_param._value_widget, "setValue"):
-                        new_param._value_widget.setValue(val)
-                    elif isinstance(new_param._value_widget, QLineEdit):
-                        new_param._value_widget.setText(val)
-                    elif isinstance(new_param._value_widget, QComboBox):
-                        new_param._value_widget.setCurrentText(val)
-                    elif isinstance(new_param._value_widget, QCheckBox):
-                        new_param._value_widget.setChecked(val)
+            # Restore parameters
+            for param_id, value in node_data.get("parameters", {}).items():
+                param = new_node.parameters.get(param_id)
+                if param is None:
+                    continue
+                try:
+                    if hasattr(param, "_value_widget") and param._value_widget:
+                        if hasattr(param._value_widget, "setValue"):
+                            param._value_widget.setValue(value)
+                        elif isinstance(param._value_widget, QLineEdit):
+                            param._value_widget.setText(value)
+                        elif isinstance(param._value_widget, QComboBox):
+                            param._value_widget.setCurrentText(value)
+                        elif isinstance(param._value_widget, QCheckBox):
+                            param._value_widget.setChecked(value)
+                    elif isinstance(param, QLineEdit):
+                        param.setText(value)
+                    elif isinstance(param, QComboBox):
+                        param.setCurrentText(value)
+                    elif isinstance(param, QCheckBox):
+                        param.setChecked(value)
+                except Exception as e:
+                    print(f"Warning: Could not paste param {param_id}: {e}")
 
             self.graphics_scene.addItem(new_node)
             self.nodes.append(new_node)
-            new_nodes.append(new_node)
+            node_id_map[node_data["id"]] = new_node
+
+        # Now reconnect wires
+        for conn in copied_data.get("connections", []):
+            output_node = node_id_map.get(conn["output_node_id"])
+            input_node = node_id_map.get(conn["input_node_id"])
+
+            if not output_node or not input_node:
+                continue
+
+            output_param = output_node.outputs.get(conn["output_port_id"])
+            input_param = input_node.parameters.get(conn["input_port_id"])
+
+            if output_param and input_param:
+                output_port = output_param.port
+                input_port = input_param.port
+                if output_port and input_port:
+                    self.connect(output_port, input_port)
 
         self.scene().clearSelection()
-        for node in new_nodes:
+        for node in node_id_map.values():
             node.setSelected(True)
+
+        return
     
     
     def begin_wire_drag(self, port, scene_pos):
@@ -540,7 +782,7 @@ class NodeEditor(QGraphicsView):
         node.node_editor = self
         self._pending_node = node
         self.graphics_scene.addItem(node)
-        self.setCursor(Qt.CursorShape.SizeAllCursor)
+        self._update_cursor()
         return
     
     
@@ -597,6 +839,198 @@ class NodeEditor(QGraphicsView):
                     # Disconnect logic
                     item.remove()
     
+    #region Save graph
+    def save_graph_dialog(self):
+        path, _ = QFileDialog.getSaveFileName(self, "Save Node Graph", "", "JSON Files (*.json)")
+        if path:
+            if not path.endswith(".json"):
+                path += ".json"
+            self.save_graph(path)
+    
+    
+    def save_graph(self, path: str = None) -> None:
+        if path is None:
+            path = self._graph_path
+
+        if not path:
+            self.save_graph_dialog()
+            return
+
+        data = {
+            "nodes": []
+        }
+        node_id_map = {}
+
+        for idx, node in enumerate(self.nodes):
+            node_id_map[node] = idx
+
+        for node in self.nodes:
+            node_data = {
+                "id": node_id_map[node],
+                "class": node.__class__.__name__,
+                "pos": [node.pos().x(), node.pos().y()],
+                "parameters": {},
+                "inputs": {}
+            }
+
+            for param_id, param in node.parameters.items():
+                try:
+                    value = param.get_value()
+                    node_data["parameters"][param_id] = value
+                except Exception as e:
+                    print(f"Warning: Could not save param {param_id}: {e}")
+
+                if hasattr(param, "port") and param.port and param.port.port_type == "input":
+                    port = param.port
+                    if port.accept_multiple_wires:
+                        wires = port.connected_wires
+                    else:
+                        wires = [port.connected_wire] if port.connected_wire else []
+
+                    node_data["inputs"][param_id] = []
+                    for wire in wires:
+                        if wire is None:
+                            continue
+                        source_node = wire.output_port.parent_node
+                        source_port_id = wire.output_port.port_id
+                        node_data["inputs"][param_id].append({
+                            "source_node_id": node_id_map.get(source_node),
+                            "source_port_id": source_port_id
+                        })
+
+            data["nodes"].append(node_data)
+
+        with open(path, "w") as f:
+            json.dump(data, f, indent=2)
+
+        self._graph_path = path
+        self._unsaved_changes = False
+        self._update_container_title()
+        
+        print(f"NodeEditor.save_graph() -> Saved graph to {path}")
+        return
+    
+    
+    def _autosave(self) -> None:
+        if not self._unsaved_changes:
+            return
+        
+        self.save_graph(self._autosave_path)
+        return
+    
+    
+    #region Load graph
+    def open_graph_dialog(self):
+        path, _ = QFileDialog.getOpenFileName(self, "Open Node Graph", "", "JSON Files (*.json)")
+        if path:
+            self.load_graph(path)
+    
+    def load_graph(self, path: str) -> None:
+        with open(path, "r") as f:
+            data = json.load(f)
+
+        self._allow_graph_evaluation = False
+        self.clear_scene()
+        node_id_map = {}
+
+        for node_data in data["nodes"]:
+            cls_name = node_data["class"]
+            cls = self._find_node_class_by_name(cls_name)
+            if cls is None:
+                print(f"Warning: Node class {cls_name} not found.")
+                continue
+
+            node = cls()
+            self.add(node, QPointF(*node_data["pos"]))
+            node_id_map[node_data["id"]] = node
+
+            for param_id, value in node_data.get("parameters", {}).items():
+                param = node.parameters.get(param_id)
+                if param is None:
+                    continue
+                try:
+                    if isinstance(param, NodeParameter):
+                        widget = param._value_widget
+                        if widget:
+                            if hasattr(widget, "setValue"):
+                                widget.setValue(value)
+                            elif isinstance(widget, QLineEdit):
+                                widget.setText(value)
+                            elif isinstance(widget, QComboBox):
+                                widget.setCurrentText(value)
+                            elif isinstance(widget, QCheckBox):
+                                widget.setChecked(value)
+                    elif isinstance(param, QLineEdit):
+                        param.setText(value)
+                    elif isinstance(param, QComboBox):
+                        param.setCurrentText(value)
+                    elif isinstance(param, QCheckBox):
+                        param.setChecked(value)
+                except Exception as e:
+                    print(f"Warning: Could not restore param {param_id}: {e}")
+
+
+        for node_data in data["nodes"]:
+            input_node = node_id_map.get(node_data["id"])
+            if not input_node:
+                continue
+
+            for param_id, connections in node_data.get("inputs", {}).items():
+                input_param = input_node.parameters.get(param_id)
+                if not input_param:
+                    continue
+                input_port = input_param.port
+                if not input_port:
+                    continue
+
+                for conn in connections:
+                    source_node = node_id_map.get(conn["source_node_id"])
+                    if not source_node:
+                        continue
+                    output_param = source_node.outputs.get(conn["source_port_id"])
+                    if not output_param:
+                        continue
+                    output_port = output_param.port
+                    if not output_port:
+                        continue
+
+                    self.connect(output_port, input_port)
+
+        self._graph_path = path
+        self._unsaved_changes = False
+        self._update_container_title()
+        
+        self._allow_graph_evaluation = True
+        self.trigger_evaluation()
+        
+        print(f"NodeEditor.load_graph() -> Loaded graph from {path}")
+        return
+    
+    
+    def _find_node_class_by_name(self, class_name: str):
+        for class_list in self.node_class_map.values():
+            for cls in class_list:
+                if cls.__name__ == class_name:
+                    return cls
+        return None
+    
+    
+    def clear_scene(self) -> None:
+        for node in list(self.nodes):
+            self.remove(node)
+
+        self.nodes.clear()
+        self.cache.clear()
+
+
+        for item in self.scene().items():
+            if isinstance(item, Wire):
+                item.remove()
+
+        self.scene().clearSelection()
+        self.scene().update()
+        return
+    
     
     #region Evaluate graph
     def evaluate_node(self, node):
@@ -633,7 +1067,7 @@ class NodeEditor(QGraphicsView):
             return result
 
     def trigger_evaluation(self) -> None:
-        if not self._is_ready:
+        if not self._allow_graph_evaluation:
             return
         
         self.evaluate_graph()
@@ -642,7 +1076,7 @@ class NodeEditor(QGraphicsView):
 
     def evaluate_graph(self):
         start = time.time()
-        self._is_ready = False
+        self._allow_graph_evaluation = False
         
         visited = set()
         results = {}
@@ -679,7 +1113,7 @@ class NodeEditor(QGraphicsView):
         minutes, seconds = divmod(elapsed, 60)
         milliseconds = (seconds - int(seconds)) * 1000
         print(f"Graph evaluated in: {int(minutes)}m {int(seconds)}s {int(milliseconds):.0f}ms")
-        self._is_ready = True
+        self._allow_graph_evaluation = True
         return results
     
     

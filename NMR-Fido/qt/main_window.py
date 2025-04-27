@@ -370,7 +370,11 @@ class MainWindow(QMainWindow):
         node_editor_container.setLayout(node_editor_container_layout)
         
         
-        self.node_editor = NodeEditor(scene_size=(10_000, 5_000), background_color=COLOR_PALETTE["--bg-color1"])
+        self.node_editor = NodeEditor(
+            parent_container=node_editor_container,
+            scene_size=(10_000, 5_000),
+            background_color=COLOR_PALETTE["--bg-color1"]
+        )
         node_editor_container_layout.addWidget(self.node_editor)
         
         self.node_editor._spawn_debugging_nodes()
