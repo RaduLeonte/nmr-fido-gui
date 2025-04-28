@@ -1,0 +1,71 @@
+/* QWidget {
+    background-color: var(--bg-color1);
+    color: var(--text-color);
+} */
+
+QLabel {
+    background-color: none;
+}
+
+QLineEdit {
+    background-color: var(--bg-color1);
+    color: var(--text-color);
+}
+
+QSpinBox {
+    background-color: var(--bg-color1);
+    color: var(--text-color);
+}
+
+QDoubleSpinBox {
+    background-color: var(--bg-color1);
+    color: var(--text-color);
+}
+
+QComboBox {
+    background-color: var(--bg-color1);
+    color: var(--text-color)
+}
+
+
+#CustomCheckBox {
+    background-color: var(--bg-color1);
+    color: var(--text-color);
+}
+#CustomCheckBox[checked="true"] {
+    background-color: #4772b3;
+}
+
+
+/* OVERLAY */
+#Overlay {
+    background-color: rgba(0, 0, 0, 100);
+    font-weight: bold;
+}
+
+#Overlay[status="valid"] {
+    background-color: rgba(0, 255, 0, 10);
+}
+
+#Overlay[status="invalid"] {
+    background-color: rgba(255, 0, 0, 10);
+}
+
+
+/* NODE EDITOR */
+#NodeInnerFrame {
+    border: 2px solid black;
+    border-radius: 5px;
+}
+#NodeInnerFrame[selected="true"] {
+    border: 2px solid var(--text-color);
+}
+
+#NodeBody {
+    background-color: var(--bg-color2);
+}
+
+#NodeParameter {
+    background-color: white;
+    border: 4px solid red;
+}
